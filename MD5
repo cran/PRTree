@@ -1,0 +1,12 @@
+682f7ebe55262e236987087fe7aea1fa *DESCRIPTION
+de15392530d24abc1bbefbd720bbe647 *NAMESPACE
+a8b4f53be9b05318a9db9cef1898731c *R/pr_tree_predict.R
+404787ad59961482d668dc699d8f1b41 *R/prtree.R
+d94ba64102e01a4d0cff1548a804e498 *R/prtree_main.R
+cd22ffa8ddf4efa7d36b673c1c1231f9 *man/PRTree.Package.Rd
+b806d8199d534b9d8fd511dbb0850f65 *man/pr_tree.Rd
+75eb6581738ad0f393e2131fe47dad34 *man/predict.prtree.Rd
+9bc5aa7d4334d43640f515c9a1fd70bd *src/Makevars
+9bc5aa7d4334d43640f515c9a1fd70bd *src/Makevars.win
+23c9f6b553167ef56047a199ff252803 *src/PRTree_init.c
+5d3a18d2b5a01902981061fe2142b826 *src/base.f90
