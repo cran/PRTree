@@ -374,10 +374,12 @@ contains
              call safe_allocate(ind, size(nodes_matrix%node))
              ind = nodes_matrix%node == node
 
-             new_nodes%sup = (/ pack(nodes_matrix%sup, ind), &
-                  pack(nodes_matrix%sup, ind)/)
-             new_nodes%inf = (/ pack(nodes_matrix%inf, ind), &
-                  pack(nodes_matrix%inf, ind)/)
+             new_nodes(1:ncol)%sup = pack(nodes_matrix%sup, ind)
+             new_nodes((ncol+1):(2*ncol))%sup = pack(nodes_matrix%sup, ind)
+             new_nodes(1:ncol)%inf = pack(nodes_matrix%inf, ind)
+             new_nodes((ncol+1):(2*ncol))%inf = pack(nodes_matrix%inf, ind)
+
+			
              new_nodes%var = (/(/(j, j =1,ncol)/), (/(j, j =1,ncol)/)/)
              new_nodes(var)%sup = val1
              new_nodes(var+ncol)%inf = val1
@@ -391,7 +393,15 @@ contains
 
              ! creating the new P matrix. Only the last two columns need to be updated
              call safe_allocate(Pnew, nrow, k+1)
-             Pnew(:,1:(k-1)) = Pant(:, pack((/(j,j =1,k)/),(/(j,j=1,k)/).ne.node))            
+			
+			 do i = 1,k
+				j = 1
+				if(j .ne. node) then
+					Pnew(:,j) = Pant(:,i)
+					j = j+1
+				end if
+			 end do
+			
              do j = 1,2            
                 ! find the position of the new terminal nodes
                 call safe_allocate(ind, size(new_nodes%node))
