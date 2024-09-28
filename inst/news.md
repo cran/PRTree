@@ -1,3 +1,10 @@
+### 0.1.2 (2024-09-28)
+
+* Minor fix
+
+* Fixed bug of version 0.1.1
+
+
 ### 0.1.1 (2024-09-14)
 
 * Minor fix

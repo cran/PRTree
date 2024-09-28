@@ -102,6 +102,7 @@ contains
     real(dp), allocatable, intent(inout) :: M(:,:)
     if(allocated(M)) deallocate(M)
     allocate(M(nrow, ncol))
+	M = 0.0d0 ! Prevents uninitialized usage v 1.1.2
     return	
   end subroutine safe_allocate_matrix
 
@@ -111,6 +112,7 @@ contains
     integer, allocatable, intent(inout) :: M(:,:)
     if(allocated(M)) deallocate(M)
     allocate(M(nrow, ncol))
+	M = 0 ! Prevents uninitialized usage v 1.1.2
     return	
   end subroutine safe_allocate_matrix_int
 
@@ -394,8 +396,9 @@ contains
              ! creating the new P matrix. Only the last two columns need to be updated
              call safe_allocate(Pnew, nrow, k+1)
 			
+			 j = 1	
 			 do i = 1,k
-				j = 1
+			 	
 				if(j .ne. node) then
 					Pnew(:,j) = Pant(:,i)
 					j = j+1
