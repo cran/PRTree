@@ -1,9 +1,9 @@
-5a98c0ea96bc10d1f884649bd9c5b7cc *DESCRIPTION
+7f8b4d95bed0255f3bad3de73a16b3fa *DESCRIPTION
 de15392530d24abc1bbefbd720bbe647 *NAMESPACE
-a8b4f53be9b05318a9db9cef1898731c *R/pr_tree_predict.R
+95632d2b4a63536f1a6381471161c759 *R/pr_tree_predict.R
 404787ad59961482d668dc699d8f1b41 *R/prtree.R
-d94ba64102e01a4d0cff1548a804e498 *R/prtree_main.R
-fd99835ab60a8b82c54adb6ef88ea256 *inst/news.md
+b3c5ed5c645cd05811c93ff7f637e0e7 *R/prtree_main.R
+1e3bcc95810c8604fe515780081e5811 *inst/news.md
 cd22ffa8ddf4efa7d36b673c1c1231f9 *man/PRTree.Package.Rd
 b806d8199d534b9d8fd511dbb0850f65 *man/pr_tree.Rd
 75eb6581738ad0f393e2131fe47dad34 *man/predict.prtree.Rd

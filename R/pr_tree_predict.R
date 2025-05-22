@@ -20,7 +20,7 @@ predict.prtree = function(object, newdata, ...){
 	X_test <- newdata
 
   # variables
-  Iindep = 1
+  Iindep = 1L
 
   nrow = nrow(X_test)
   ncol = ncol(X_test)

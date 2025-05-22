@@ -32,7 +32,7 @@
 #'X = matrix(runif(200, 0, 10), ncol = 1)
 #'eps = matrix(rnorm(200, 0, 0.05), ncol = 1)
 #'y =  matrix(cos(X) + eps, ncol = 1)
-#'reg = PRTree::pr_tree(y, X, max_terminal_nodes = 9)
+#'reg = pr_tree(y, X, max_terminal_nodes = 9)
 #'plot(X[order(X)], reg$yhat[order(X)], xlab = 'x', ylab = 'cos(x)', col = 'blue', type = 'l')
 #'points(X[order(X)], y[order(X)], xlab = 'x', ylab = 'cos(x)', col = 'red')
 #'
