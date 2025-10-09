@@ -2,4 +2,7 @@
 
 S3method(predict,prtree)
 export(pr_tree)
+export(pr_tree_control)
+importFrom(stats,sd)
+importFrom(utils,modifyList)
 useDynLib(PRTree, .registration=TRUE)

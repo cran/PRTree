@@ -4,54 +4,73 @@
 \alias{pr_tree}
 \title{Probabilistic Regression Trees (PRTrees)}
 \usage{
-pr_tree(y, X, sigma_grid = NULL, max_terminal_nodes = 15L, cp = 0.01,
-  max_depth = 5L, n_min = 5L, perc_x = 0.1, p_min = 0.05)
+pr_tree(y, X, control = list(), ...)
 }
 \arguments{
-\item{y}{a numeric vector corresponding to the dependent variable}
+\item{y}{A numeric vector for the dependent variable.}
 
-\item{X}{A numeric vector, matrix or dataframe corresponding to the independent variables, with the same number of observations as \code{y}.}
+\item{X}{A numeric matrix or data frame for the independent variables.}
 
-\item{sigma_grid}{optionally, a numeric vector with candidate values for the parameter \eqn{\sigma}, to be passed to the grid search algorithm. If \code{NULL}, the standard deviations of the columns in \code{X} are used. The default is \code{NULL}.}
+\item{control}{A list of control parameters, typically created by
+`pr_tree_control()`. Alternatively, control parameters can be passed
+directly via the `...` argument.}
 
-\item{max_terminal_nodes}{a non-negative integer. The maximum number of regions in the output tree. The default is 15.}
-
-\item{cp}{a positive numeric value. The complexity parameter. Any split that does not decrease the MSE by a factor of \code{cp} will be ignored. The default is 0.01.}
-
-\item{max_depth}{a non-negative integer. The maximum depth of the decision tree. The depth is defined as the length of the longest path from the root to a leaf. The default is 5.}
-
-\item{n_min}{a non-negative integer, The minimum number of observations in a final node. The default is 5.}
-
-\item{perc_x}{a positive numeric value. Given a column of \eqn{P}, the value \code{perc_x} is the percentage of rows in this column that must have a probability higher than the threshold \code{p_min} for a splitting attempt to be made in the corresponding region. The default is 0.1.}
-
-\item{p_min}{a positive numeric value. A threshold probability that controls the splitting process. A splitting attempt is made in a given region only when the proportion of rows with probability higher than \code{p_min}, in the corresponding column of the matrix \eqn{P}, is equal to \code{perc_x}. The default is 0.05.}
+\item{...}{Control parameters to be passed to `pr_tree_control()`.
+These will override any parameters specified in the `control` list.}
 }
 \value{
-\item{yhat}{the estimated values for \code{y}}
+An object of class `prtree` containing the fitted model. This is a
+  list with the following components
 
-\item{P}{the matrix of probabilities calculated with the observations in \code{X} for the returned tree}
+\item{yhat}{The estimated values for `y`.}
 
-\item{gamma}{the values of the \eqn{\gamma_j} weights estimated for the returned tree}
+\item{XRegion}{A matrix with two columns indicating the terminal node (region)
+  each observation belongs to. The first column (`TRUE`) may have `NA` for
+  observations with missing values. The second column (`Internal`) shows the
+  region assigned by the algorithm.}
 
-\item{MSE}{the mean squared error calculated for the returned tree}
+\item{dist}{The Fortran code corresponding to the distribution used. (For
+prediction purposes)}
+\item{par_dist}{Parameters related to the distribution (if any).}
 
-\item{sigma}{the \eqn{\sigma} of the returned tree}
+\item{fill_type}{Fortran code corresponding to the method used to fill the
+matrix P when missing values are present.}
 
-\item{nodes_matrix_info}{information related to each node of the returned tree}
+\item{P}{The matrix of probabilities for each terminal node.}
 
-\item{regions}{information related to each region of the returned tree}
+\item{gamma}{The values of the \eqn{\gamma_j} weights estimated for the
+returned tree}
+
+\item{MSE}{The mean squared error for the training, test/validation, and
+  global datasets.}
+
+\item{sigma}{The optimal \eqn{\sigma} vector selected by the grid search.}
+
+\item{nodes_matrix_info}{A matrix with information for each node of the tree.}
+
+\item{regions}{A data frame with the bounds of each variable in each node of
+the returned tree.}
 }
 \description{
-Probabilistic Regression Trees (PRTrees)
+Fits a Probabilistic Regression Tree (PRTree) model. This is the
+  main user-facing function of the package.
 }
 \examples{
-
 set.seed(1234)
-X = matrix(runif(200, 0, 10), ncol = 1)
-eps = matrix(rnorm(200, 0, 0.05), ncol = 1)
-y =  matrix(cos(X) + eps, ncol = 1)
-reg = PRTree::pr_tree(y, X, max_terminal_nodes = 9)
-plot(X[order(X)], reg$yhat[order(X)], xlab = 'x', ylab = 'cos(x)', col = 'blue', type = 'l')
-points(X[order(X)], y[order(X)], xlab = 'x', ylab = 'cos(x)', col = 'red')
+X <- matrix(runif(200, 0, 10), ncol = 1)
+eps <- matrix(rnorm(200, 0, 0.05), ncol = 1)
+y <- cos(X) + eps
+
+# Fit model with custom controls passed directly
+reg <- pr_tree(y, X, max_terminal_nodes = 9, perc_test = 0)
+
+plot(
+  X[order(X)], reg$yhat[order(X)],
+  xlab = "x", ylab = "cos(x)", col = "blue", type = "l"
+)
+points(
+  X[order(X)], y[order(X)],
+  xlab = "x", ylab = "cos(x)", col = "red"
+)
 
 }

@@ -1,2 +1,15 @@
 PKG_LIBS = $(LAPACK_LIBS) $(BLAS_LIBS) $(FLIBS)
 
+FT_OBJS = prtree_types.f90  prtree_misc.f90 prtree.f90 Rcalls.f90
+
+C_OBJS = PRTree_init.c
+
+# Define the order of compilation
+OBJECTS = $(FT_OBJS:.f90=.o) $(C_OBJS:.c=.o)
+
+$(SHLIB): $(OBJECTS)
+
+# Setup dependencies for parallel make
+prtree_misc.o: prtree_types.o
+prtree.o: prtree_misc.o 
+Rcalls.o: prtree.o

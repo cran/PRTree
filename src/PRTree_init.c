@@ -1,35 +1,79 @@
 #include <R.h>
-#include <Rinternals.h>
-#include <stdlib.h> // for NULL
-#include <R_ext/Rdynload.h>
-#include <Rmath.h>  // needed for some random number generators
+#include <stdlib.h>         // for NULL
+#include <R_ext/Rdynload.h> // registering .Fortran
+#include <Rmath.h>          // for distribution functions
+#include <R_ext/Utils.h>    // for revsort
+#include <R_ext/Arith.h>    // for NaN
 
-/* ------------------------------------ */
-/* R functions to be passed to FORTRAN  */
-/* ------------------------------------ */
-/* Distributions */
+/* ------------------------------------
+  R functions to be passed to FORTRAN
+  ------------------------------------ */
+/* Sorting */
+void F77_SUB(revsortr)(double *x, int *indx, int *n){
+    // x*: array to be SORTED (will be MODIFIED)
+    // indx*: index array that will be MODIFIED
+    // n: size of arrays (will not be modified)
+    Rf_revsort(x, indx, *n);
+}
 
-double F77_SUB(pnormr)(double * x, double * mu, double * sigma){return pnorm(*x, *mu, *sigma, 1,0);} /* Gaussian */
+/* -------------------------------------------
+   Distributions - PURE wrappers for Fortran
+   ------------------------------------------ */
+/* PURE version of pnorm */
+double F77_SUB(pnorm_pure)(double *x, double *mu, double *sigma) {
+    // x*: input value pointer
+    // mean*: mean parameter pointer
+    // sd*: standard deviation pointer
+    if (*sigma < 0.0) return R_NaN;
+    return Rf_pnorm5(*x, *mu, *sigma, 1, 0);
+}
+
+/* PURE version of plnorm */
+double F77_SUB(plnorm_pure)(double *x, double *meanlog, double *sdlog) {
+    // x*: input value pointer
+    // meanlog*: meanlog parameter pointer
+    // sdlog*: sdlog parameter pointer
+    if (*x <= 0.0) return 0.0;
+    if (*sdlog < 0.0) return R_NaN;
+    return  Rf_plnorm(*x, *meanlog, *sdlog, 1, 0);
+}
+
+/* PURE version of pt */
+double F77_SUB(pt_pure)(double *x, double *df) {
+    // x*: input value pointer
+    // df*: degrees of freedom pointer
+    if (*df <= 0.0) return R_NaN;
+    return Rf_pt(*x, *df, 1, 0);
+}
+
+/* PURE version of pgamma */
+double F77_SUB(pgamma_pure)(double *x, double *shape, double *scale) {
+    // x*: input value pointer
+    // shape*: shape parameter pointer
+    // scale*: scale parameter pointer
+    if (*x <= 0.0) return 0.0;
+    if (*shape < 0.0 || *scale <= 0.0) return R_NaN;
+    return Rf_pgamma(*x, *shape, *scale, 1, 0);
+}
 
 /* --------------------------- */
 /* .Fortran calls */
 /* --------------------------- */
 
-/* Extracting components */
-extern void F77_NAME(pr_treer)(double * y, double * X, int * nrow, int * ncol, double * sigma, int * dim_sigma, int * max_terminal_nodes, double * cp, int * max_depth, int * n_min, double * perc_x, double * p_min, int * Iindep, double * P, int * dim_P, double * gamma, double * yhat, double * MSE, int * nodes_matrix_info, double * cutpoints, double * inf, double * sup, double * sigma_best, int * XRegion);
+/* Build the tree */
+extern void F77_NAME(pr_tree_fort)(int *n_obs, int *n_feat, int * n_train, int *idx_train, double *y, double *X, int *n_sigmas, double *sigmas, int *int_param, double *dble_param, int *n_tn, double *P, double *gamma, double *yhat, double *mse, int *nodes, double *thresholds, double *bounds, double *sigma_best, int *Xregion);
 
 /* Prediction */
-extern void F77_NAME(predict_pr_treer)(int * Iindep, int * nrow, int * ncol, double * X_test, double * inf, double * sup, int * n_terminal_nodes, int * tn, double * P, double * gamma, int * dim_sigma, double * sigma, double * yhat_test);
+extern void F77_NAME(predict_pr_tree_fort)(int *dist, double *pdist, int *fill, int *n_obs, int *n_feat, double *X_test, double *bounds, int *n_tn, int *tn, int* nodes_info, double *P, double *gamma, double *sigma, double *yhat_test);
 
 /* --------------------------- */
 /* end of .Fortran calls */
 /* --------------------------- */
 
 static const R_FortranMethodDef FortranEntries[] = {
-		{"pr_treer",                (DL_FUNC) &F77_NAME(pr_treer),                24},
-		{"predict_pr_treer",        (DL_FUNC) &F77_NAME(predict_pr_treer),        13},
-    {NULL, NULL, 0}
-};
+    {"pr_tree_fort", (DL_FUNC)&F77_NAME(pr_tree_fort), 20},
+    {"predict_pr_tree_fort", (DL_FUNC)&F77_NAME(predict_pr_tree_fort), 14},
+    {NULL, NULL, 0}};
 
 void R_init_PRTree(DllInfo *dll)
 {
