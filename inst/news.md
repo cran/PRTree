@@ -73,7 +73,12 @@ This version is a complete architectural overhaul of the package, introducing si
 
 # Version History
 
-## PRTree 1.0.0 (Release Date: YYYY-MM-DD)
+## PRTree 1.0.1 (Release Date: YYYY-MM-DD)
+
+Fixed a bug where the `fill_type` argument wasn't being processed correctly, causing `NULL` to be passed to the prediction function.
+
+
+## PRTree 1.0.0 (2025-10-09)
 
 -   Current Version
 
