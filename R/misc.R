@@ -38,7 +38,7 @@
   # if the index for the training sample is provided, ignore perc_test
   if (!is.null(idx_train)) {
     out$idx_train <- as.integer(sort(unique(idx_train)))
-    n_train <- length(out$idx_train)
+    out$n_train <- length(out$idx_train)
     return(out)
   }
 

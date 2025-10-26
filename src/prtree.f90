@@ -788,6 +788,7 @@ contains
     logical, intent(inout) :: na_info(n_obs, n_info)
     logical, intent(in) :: update_f
 
+    idx_p%n_prob = n_prob
     ! Set the indices to be used to update the probability matrix P
     select case (fill)
     case (0)
@@ -966,7 +967,7 @@ contains
     if (idx_p%n_miss(1) > 0) then
       p(idx_p%idx_any_na, 1) = prob(idx_p%idx_any_na) / 2.0_dp
       p(idx_p%idx_any_na, 2) = prob(idx_p%idx_any_na) / 2.0_dp
-      if (idx_p%n_miss(1) == n_obs) return
+      if (idx_p%n_miss(1) == idx_p%n_prob) return
     end if
 
     ! Compute the probability for complete cases
@@ -991,7 +992,7 @@ contains
     if (idx_p%n_miss(2) > 0) then
       p(idx_p%idx_na_f, 1) = prob(idx_p%idx_na_f) / 2.0_dp
       p(idx_p%idx_na_f, 2) = prob(idx_p%idx_na_f) / 2.0_dp
-      if (idx_p%n_miss(2) == n_obs) return
+      if (idx_p%n_miss(2) == idx_p%n_prob) return
     end if
 
     ! CASE 2: X_f observed but missing values in X
@@ -1008,7 +1009,7 @@ contains
           p(idx_p%idx_any_na(i), 2) = 0.0_dp
         end if
       end do
-      if (idx_p%n_miss(1) == n_obs) return
+      if (idx_p%n_miss(1) == idx_p%n_prob) return
     end if
 
     ! Compute the probability for complete cases
@@ -1032,7 +1033,7 @@ contains
     if (idx_p%n_miss(2) > 0) then
       p(idx_p%idx_na_f, 1) = prob(idx_p%idx_na_f) / 2.0_dp
       p(idx_p%idx_na_f, 2) = prob(idx_p%idx_na_f) / 2.0_dp
-      if (idx_p%n_miss(2) == n_obs) return
+      if (idx_p%n_miss(2) == idx_p%n_prob) return
     end if
     ! Compute the probability for complete cases
     call update_prob_no_na(argsd, size(idx_p%idx), idx_p%idx, n_obs, x_f, threshold, bounds, sigma_f, prob, p)
@@ -1736,7 +1737,7 @@ contains
         ! if the last two nodes are the only splittable nodes and there are no more
         ! thresholds then the search for a new tree is over (no need to update to terminal)
         if (fail) then
-          if (n_split <= 2 .and. do_split(1) >= tree%net%n_nodes - 1) return
+           if (n_split <= 2 .and. do_split(1) >= tree%net%n_nodes - 1) return
         end if
       end if
 

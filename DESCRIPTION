@@ -1,8 +1,8 @@
 Package: PRTree
 Type: Package
-Date: 2025-10-17
+Date: 2025-10-18
 Title: Probabilistic Regression Trees
-Version: 1.0.1
+Version: 1.0.2
 Authors@R: c(person(c("Alisson", "Silva"),"Neimaier",
                     email = "alissonneimaier@hotmail.com",
                     role = c("aut"),
@@ -25,11 +25,11 @@ License: GPL (>= 3)
 Encoding: UTF-8
 NeedsCompilation: yes
 RoxygenNote: 7.3.3
-Packaged: 2025-10-18 01:56:19 UTC; Taiane
+Packaged: 2025-10-18 22:17:10 UTC; Taiane
 Author: Alisson Silva Neimaier [aut] (ORCID:
     <https://orcid.org/0000-0002-7524-0776>),
   Taiane Schaedler Prass [aut, ths, cre] (ORCID:
     <https://orcid.org/0000-0003-3136-909X>)
 Maintainer: Taiane Schaedler Prass <taianeprass@gmail.com>
 Repository: CRAN
-Date/Publication: 2025-10-18 05:10:09 UTC
+Date/Publication: 2025-10-26 12:40:02 UTC

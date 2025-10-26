@@ -73,7 +73,13 @@ This version is a complete architectural overhaul of the package, introducing si
 
 # Version History
 
-## PRTree 1.0.1 (Release Date: YYYY-MM-DD)
+## PRTree 1.0.2 (Release Date: YYYY-MM-DD)
+
+Fixed a bug where the `n_train` argument wasn't being processed correctly for a particular scenario, causing `NULL` to be passed to the building function.
+
+Fixed a bug that caused an incorrect computation of the total number of missing values in Fortran, which led to crashes in specific scenarios. 
+
+## PRTree 1.0.1 (Release Date: 2025-10-18)
 
 Fixed a bug where the `fill_type` argument wasn't being processed correctly, causing `NULL` to be passed to the prediction function.
 

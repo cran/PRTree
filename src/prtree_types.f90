@@ -64,6 +64,7 @@ module prtree_types
     ! Added July/2025
     !---------------------------------------------
     integer :: n_miss(2) = 0
+    integer :: n_prob = 0    ! number of indexes with P > eps
     integer, allocatable :: idx(:)       ! idx completo and P > eps
     integer, allocatable :: idx_na_f(:)  ! idx Xf miss and P > eps
     integer, allocatable :: idx_any_na(:)! idx X miss and P > eps

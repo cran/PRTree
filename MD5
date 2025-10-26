@@ -1,11 +1,11 @@
-22b19d869e58c9a8bbb276d4f3dacc66 *DESCRIPTION
+ba35bd8dad55283d551d4bb5d388d89c *DESCRIPTION
 979c09151b29ffd7ad50751438a34348 *NAMESPACE
-b614ec20d17673737184bd480e255984 *R/misc.R
+1ef62c462acdd0ae884cdc6fde435284 *R/misc.R
 13aab7e1438e89e8564f94e572c88c6b *R/prtree.R
 be70bad9f8cb12c14b51237c80a126b8 *R/prtree_control.R
 f4121c2ea44a14cb1c59d8bc9781835a *R/prtree_main.R
 be41764e3b6e5decaf2714b496b145b6 *R/prtree_predict.R
-ffc22aa90e698d8d93ad4e65d0904c8b *inst/news.md
+9cdde1dfcb2f5a3621aa5f244faf250b *inst/news.md
 2dc87806b96c935d3bb3508b1739f949 *man/PRTree.Package.Rd
 b8bdaf6a155ecd42ab05c0f19dc8815f *man/pr_tree.Rd
 60271c62706baa237ff9f0b140165bd9 *man/pr_tree_control.Rd
@@ -14,6 +14,6 @@ bad55f8dd3d1e42b77a00c5187c11eda *src/Makevars
 bad55f8dd3d1e42b77a00c5187c11eda *src/Makevars.win
 b214e0b1194242ff55d87144e262eee3 *src/PRTree_init.c
 622d0fe3aff72a02bf3039bea3d877e0 *src/Rcalls.f90
-d5076f0dfb5d7d138d7f32ba9428e11c *src/prtree.f90
+14372d6e6fdc7141a5989ac1240a4722 *src/prtree.f90
 0de6ced097ccddecefe936cc7b5c5bd1 *src/prtree_misc.f90
-495bf2a726a23dca0de0c20476d98a28 *src/prtree_types.f90
+5675d1d7fbee202f423fd81cfdd73ca1 *src/prtree_types.f90
