@@ -69,8 +69,8 @@
 #'
 #' @export
 #'
-pr_tree <- function(y, X, control = list(), ...) {
-  # update the control list
+pr_tree <- function(y, X, control = pr_tree_control(), ...) {
+  # update the control list (convert to required format)
   ctrl <- .update.control(control = control, ...)
 
   # check for NA in y
@@ -88,7 +88,9 @@ pr_tree <- function(y, X, control = list(), ...) {
   )
 
   # set variables to pass to Fortran
+  storage.mode(y) <- "double"
   X <- as.matrix(X)
+  storage.mode(X) <- "double"
   ctrl$n_feat <- ncol(X)
 
   # get the indexes for the training sample

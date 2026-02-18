@@ -73,20 +73,26 @@ This version is a complete architectural overhaul of the package, introducing si
 
 # Version History
 
-## PRTree 1.0.2 (Release Date: YYYY-MM-DD)
+## PRTree 1.0.3 (Release Date: YYYY-MM-DD)
 
-Fixed a bug where the `n_train` argument wasn't being processed correctly for a particular scenario, causing `NULL` to be passed to the building function.
+- Fixed an issue in `pr_tree_control()` where distribution parameters (e.g., `df` for t-distribution) were not properly recognized when creating a control list first and then passing it to `pr_tree()`. Direct assignment to `pr_tree()` via `...` worked correctly. Parameters now work in both scenarios.
 
-Fixed a bug that caused an incorrect computation of the total number of missing values in Fortran, which led to crashes in specific scenarios. 
+- Added explicit type conversion for `y` and `X` to ensure compatibility with Fortran code.
+
+## PRTree 1.0.2 (Release Date: 2025-10-26)
+
+- Fixed a bug where the `n_train` argument wasn't being processed correctly for a particular scenario, causing `NULL` to be passed to the building function.
+
+- Fixed a bug that caused an incorrect computation of the total number of missing values in Fortran, which led to crashes in specific scenarios. 
 
 ## PRTree 1.0.1 (Release Date: 2025-10-18)
 
-Fixed a bug where the `fill_type` argument wasn't being processed correctly, causing `NULL` to be passed to the prediction function.
+- Fixed a bug where the `fill_type` argument wasn't being processed correctly, causing `NULL` to be passed to the prediction function.
 
 
 ## PRTree 1.0.0 (2025-10-09)
 
--   Current Version
+-   Major Revision
 
 ## PRTree 0.1.3 (2025-05-22)
 

@@ -4,7 +4,7 @@
 \alias{pr_tree}
 \title{Probabilistic Regression Trees (PRTrees)}
 \usage{
-pr_tree(y, X, control = list(), ...)
+pr_tree(y, X, control = pr_tree_control(), ...)
 }
 \arguments{
 \item{y}{A numeric vector for the dependent variable.}

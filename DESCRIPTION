@@ -1,8 +1,8 @@
 Package: PRTree
 Type: Package
-Date: 2025-10-18
+Date: 2026-02-18
 Title: Probabilistic Regression Trees
-Version: 1.0.2
+Version: 1.0.3
 Authors@R: c(person(c("Alisson", "Silva"),"Neimaier",
                     email = "alissonneimaier@hotmail.com",
                     role = c("aut"),
@@ -19,17 +19,17 @@ Description: Implementation of Probabilistic Regression Trees (PRTree),
   Alkhoury et al. (2020), "Smooth and Consistent Probabilistic Regression Trees"
   <https://proceedings.neurips.cc/paper_files/paper/2020/file/8289889263db4a40463e3f358bb7c7a1-Paper.pdf>.
   Details on the treatment of missing data and implementation aspects are presented in
-  Prass, T.S.; Neimaier, A.S.; Pumi, G. (2025), "Handling Missing Data in Probabilistic Regression Trees:
-  Methods and Implementation in R" <doi:10.48550/arXiv.2510.03634>.
+  Prass, T.S.; Neimaier, A.S.; Pumi, G. (2025), "Handling Missing Data in Probabilistic 
+  Regression Trees: Methods and Implementation in R" <doi:10.48550/arXiv.2510.03634>.
 License: GPL (>= 3)
 Encoding: UTF-8
 NeedsCompilation: yes
 RoxygenNote: 7.3.3
-Packaged: 2025-10-18 22:17:10 UTC; Taiane
+Packaged: 2026-02-18 22:15:47 UTC; Taiane
 Author: Alisson Silva Neimaier [aut] (ORCID:
     <https://orcid.org/0000-0002-7524-0776>),
   Taiane Schaedler Prass [aut, ths, cre] (ORCID:
     <https://orcid.org/0000-0003-3136-909X>)
 Maintainer: Taiane Schaedler Prass <taianeprass@gmail.com>
 Repository: CRAN
-Date/Publication: 2025-10-26 12:40:02 UTC
+Date/Publication: 2026-02-18 22:30:02 UTC

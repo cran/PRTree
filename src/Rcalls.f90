@@ -133,9 +133,11 @@ subroutine pr_tree_fort(n_obs, n_feat, n_train, idx_train, y, x, n_sigmas, sigma
 
   ! Early skip if no thresholds are available
   if (all(tree%net%nodes(1)%state%thresholds%nt == 0)) then
+	  if (printinfo >= log_base) then
     ! Debug: Print node splitting info
-    call labelpr("Root node cannot be splitted: No thresholds found.", -1)
-    call labelpr(" ", -1)
+			call labelpr("Root node cannot be splitted: No thresholds found.", -1)
+			call labelpr(" ", -1)
+		end if
 
     ! The tree is just the root node. Populate outputs accordingly before returning.
     sigma_best = 0.0_dp

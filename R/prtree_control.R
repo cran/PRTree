@@ -194,20 +194,28 @@ pr_tree_control <- function(sigma_grid = NULL,
 }
 
 
+
 .update.control <- function(control, ...) {
   # Get parameters in ...
   all_params <- list(...)
+
   # Separate control parameters from distribution parameters
   control_params <- names(formals(pr_tree_control))
   control_args <- all_params[names(all_params) %in% control_params]
-  dist_args <- all_params[!names(all_params) %in% control_params]
+  dist_args <- all_params[!names(all_params) %in% c(control_params, "dist_pars")]
+
   # Merge with explicit control list
   ctrl <- modifyList(control, control_args)
-  # Add distribution parameters if any
-  if (length(dist_args) > 0) {
-    ctrl$dist_pars <- dist_args
-  }
+
   # Re-validate the ctrl object
   ctrl <- do.call(pr_tree_control, ctrl)
+
+  # copy distribution related parameters (if any)
+  pars <- control$dist_pars
+  dist_pars <- if (is.null(pars)) list() else pars
+  pars <- all_params$dist_pars
+  dist_pars <- if (is.null(pars)) dist_pars else modifyList(dist_pars, pars)
+  ctrl$dist_pars <- modifyList(dist_pars, dist_args)
+
   return(ctrl)
 }

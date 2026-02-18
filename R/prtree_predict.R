@@ -23,6 +23,7 @@
 #'
 predict.prtree <- function(object, newdata, complete = FALSE, ...) {
   X_test <- as.matrix(newdata)
+  storage.mode(X_test) <- "double"
   nr <- nrow(X_test)
   nc <- ncol(X_test)
 
