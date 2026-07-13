@@ -7,24 +7,25 @@
 \method{predict}{prtree}(object, newdata, complete = FALSE, ...)
 }
 \arguments{
-\item{object}{An object of class `prtree`, as returned by `pr_tree()`.}
+\item{object}{An object of class \code{prtree}, as returned by \link{pr_tree}.}
 
-\item{newdata}{A data frame or matrix containing new data for which to
-generate predictions. Must contain the same predictor variables as the
-data used to fit the model.}
+\item{newdata}{A numeric matrix or data frame containing new data for
+which to generate predictions. Must contain the exact same number and
+order of predictor variables as the data used to fit the model.
+It can contain missing values (\code{NA}).}
 
-\item{complete}{Logical. If `FALSE` (default), only the vector of predicted
-values is returned. If `TRUE`, a list containing both the predicted values
-and the probability matrix `P` is returned.}
+\item{complete}{Logical. If \code{FALSE} (default), only the vector of predicted
+values is returned. If \code{TRUE}, a list containing both the predicted values
+and the probability matrix \code{P} is returned.}
 
 \item{...}{further arguments passed to or from other methods.}
 }
 \value{
-If `complete = FALSE`, a numeric vector of predicted values (`yhat`).
-  If `complete = TRUE`, a list containing:
-  \item{yhat}{The numeric vector of predicted values.}
-  \item{P}{The probability matrix for the new data.}
+If \code{complete = FALSE}, a numeric vector of predicted values (\code{yhat}).
+If \code{complete = TRUE}, a list containing:
+\item{yhat}{The numeric vector of predicted values.}
+\item{P}{The probability matrix for the new data.}
 }
 \description{
-Obtains predictions from a fitted `prtree` object.
+Obtains predictions from a fitted \code{prtree} object.
 }

@@ -59,12 +59,12 @@ This version is a complete architectural overhaul of the package, introducing si
 ### Backward-Incompatible Changes
 
 -   The old `Iindep` parameter has been removed (it was unused in the previous version).
--   The default value for `max_depth` is now `max_terminal_node - 1`.
+-   The default value for `max_depth` is now `max_terminal_nodes - 1`.
 -   The prediction function now returns only `yhat` by default. The full probability matrix `P` can be obtained with `complete = TRUE`. The `newdata` field has been removed from the output list.
 -   The new version adds `XRegion` field to the output
 -   The new version requires additional parameters for enhanced features.
 
-## Version 0.1.3 (Previous Stable)
+## Version 0.1.3
 
 -   Initial stable implementation (`base.f90`)
 -   Basic probabilistic regression tree functionality
@@ -73,7 +73,28 @@ This version is a complete architectural overhaul of the package, introducing si
 
 # Version History
 
-## PRTree 1.0.3 (Release Date: YYYY-MM-DD)
+## PRTree 1.1.0 (Release Date: YYYY-MM-DD)
+
+### New features
+
+- Added support for cross-validation through new functions for model fitting, evaluation, and result summaries.
+
+### Improvements
+
+- Refactored the internal R and Fortran codebase to improve maintainability and extensibility while preserving backward compatibility.
+- Improved the documentation of several functions and parameters.
+- Corrected the documented default value of `n_min`.
+
+### Changes
+
+- Renamed `perc_test` to `prop_hold` to better reflect its role as the proportion of observations held out for validation or testing, depending on the `sigma_grid` setting.
+- Renamed `perc_x` to `prop_x` for consistency with the package naming convention.
+
+### Bug fixes
+
+- Fixed an error in the Fortran implementation for non-Gaussian distributions. The standardized variable is now correctly computed as `(v - mu) / sigma` instead of `v * sigma + mu`.
+
+## PRTree 1.0.3 (Release Date: 2026-02-18)
 
 - Fixed an issue in `pr_tree_control()` where distribution parameters (e.g., `df` for t-distribution) were not properly recognized when creating a control list first and then passing it to `pr_tree()`. Direct assignment to `pr_tree()` via `...` worked correctly. Parameters now work in both scenarios.
 
@@ -83,7 +104,7 @@ This version is a complete architectural overhaul of the package, introducing si
 
 - Fixed a bug where the `n_train` argument wasn't being processed correctly for a particular scenario, causing `NULL` to be passed to the building function.
 
-- Fixed a bug that caused an incorrect computation of the total number of missing values in Fortran, which led to crashes in specific scenarios. 
+- Fixed a bug that caused an incorrect computation of the total number of missing values in Fortran, which led to crashes in specific scenarios.
 
 ## PRTree 1.0.1 (Release Date: 2025-10-18)
 

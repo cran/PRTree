@@ -4,34 +4,48 @@
 \alias{pr_tree}
 \title{Probabilistic Regression Trees (PRTrees)}
 \usage{
-pr_tree(y, X, control = pr_tree_control(), ...)
+pr_tree(y, X, control = list(), ...)
 }
 \arguments{
 \item{y}{A numeric vector for the dependent variable.}
 
-\item{X}{A numeric matrix or data frame for the independent variables.}
+\item{X}{A strictly numeric matrix or data frame for the independent
+variables. Categorical variables or factors must be encoded (e.g., one-hot
+encoding) prior to model fitting.}
 
 \item{control}{A list of control parameters, typically created by
-`pr_tree_control()`. Alternatively, control parameters can be passed
-directly via the `...` argument.}
+\link{pr_tree_control}. Default values are taken from \link{pr_tree_control}
+for any parameters not specified. Alternatively, control parameters can
+be passed directly via the \code{...} argument.}
 
-\item{...}{Control parameters to be passed to `pr_tree_control()`.
-These will override any parameters specified in the `control` list.}
+\item{...}{Control parameters to be passed to \link{pr_tree_control}.
+These will override any parameters specified in the \code{control} list.}
 }
 \value{
-An object of class `prtree` containing the fitted model. This is a
-  list with the following components
+An object of class \code{prtree} containing the fitted model. This is a
+list with the following components
 
-\item{yhat}{The estimated values for `y`.}
+\item{n_obs}{Number of observations used in the model.}
+
+\item{n_feat}{Number of features (predictor variables) in the model.}
+
+\item{features}{The features names: either \code{colnames(X)} or a vector with
+generic names \verb{X1,...,Xn_feat}}
+
+\item{yhat}{The estimated values for \code{y}.}
 
 \item{XRegion}{A matrix with two columns indicating the terminal node (region)
-  each observation belongs to. The first column (`TRUE`) may have `NA` for
-  observations with missing values. The second column (`Internal`) shows the
-  region assigned by the algorithm.}
+each observation belongs to. The first column (\code{TRUE}) may have \code{NA} for
+observations with missing values. The second column (\code{Internal}) shows the
+region assigned by the algorithm.}
 
-\item{dist}{The Fortran code corresponding to the distribution used. (For
-prediction purposes)}
-\item{par_dist}{Parameters related to the distribution (if any).}
+\item{dist}{A list with distribution information:
+\itemize{
+\item \code{dist_name}: Name of the distribution ("norm", "lnorm", "t", "gamma").
+\item \code{dist_code}: Integer code used by Fortran (1-4).
+\item \code{par_name}: Name of the distribution parameter (e.g., "df", "shape").
+\item \code{<par_name>}: Value of the distribution parameter.
+}}
 
 \item{fill_type}{Fortran code corresponding to the method used to fill the
 matrix P when missing values are present.}
@@ -41,10 +55,10 @@ matrix P when missing values are present.}
 \item{gamma}{The values of the \eqn{\gamma_j} weights estimated for the
 returned tree}
 
-\item{MSE}{The mean squared error for the training, test/validation, and
-  global datasets.}
+\item{mse}{The mean squared error for the training, test/validation, and
+global datasets.}
 
-\item{sigma}{The optimal \eqn{\sigma} vector selected by the grid search.}
+\item{sigma}{The optimal \eqn{\boldsymbol\sigma} vector selected by the grid search.}
 
 \item{nodes_matrix_info}{A matrix with information for each node of the tree.}
 
@@ -52,8 +66,40 @@ returned tree}
 the returned tree.}
 }
 \description{
-Fits a Probabilistic Regression Tree (PRTree) model. This is the
-  main user-facing function of the package.
+Fits a Probabilistic Regression Tree (PRTree) model. This is the main
+user-facing function of the package.
+}
+\details{
+The tree is built using the training data specified by \code{idx_train} (or
+determined by \code{prop_test}). If validation data is available (the complement
+of \code{idx_train}), it is used to select the optimal \eqn{\boldsymbol\sigma} values from
+the grid.
+
+\strong{Grid generation}:
+\itemize{
+\item If \code{sigma_grid} is not provided, it is automatically generated using
+\strong{only the training set} (the observations identified by \code{idx_train},
+which can be passed via \code{control} or calculated internally from \code{prop_test}).
+The validation/test data is used only for evaluation.
+\item Alternatively, users can create a custom grid using the helper function
+\code{expand_sigma_grid(X, ...)} and pass it via the \code{control} parameter. This
+allows using the full dataset (or any desired subset) to define the grid of
+\eqn{\boldsymbol\sigma} values to be tested.
+}
+
+\strong{Important}: The returned model is trained \strong{only on the training set},
+not on the combined training + validation data. This matches standard
+practice where validation data is used only for hyperparameter selection, not
+for final parameter estimation.
+
+If you want to retrain the model using the selected \eqn{\boldsymbol\sigma} values on a
+larger dataset (e.g., combining training and validation), you can:
+\enumerate{
+\item Extract the optimal \eqn{\boldsymbol\sigma} from the fitted model (\code{model$sigma})
+\item Create a new control object with \code{sigma_grid = matrix(model$sigma, nrow = 1)}
+and set \code{prop_test = 0} to use all data for training
+\item Run \link{pr_tree} again
+}
 }
 \examples{
 set.seed(1234)
@@ -61,16 +107,34 @@ X <- matrix(runif(200, 0, 10), ncol = 1)
 eps <- matrix(rnorm(200, 0, 0.05), ncol = 1)
 y <- cos(X) + eps
 
-# Fit model with custom controls passed directly
-reg <- pr_tree(y, X, max_terminal_nodes = 9, perc_test = 0)
+# Fit model
+reg <- pr_tree(y, X, max_terminal_nodes = 9, prop_hold = 0)
 
-plot(
-  X[order(X)], reg$yhat[order(X)],
-  xlab = "x", ylab = "cos(x)", col = "blue", type = "l"
+# Visualize fit (X is 1D, so we can plot the relationship)
+ord <- order(X)
+plot(X[ord], reg$yhat[ord],
+  type = "l", col = "blue", lwd = 2,
+  xlab = "x", ylab = "y",
+  main = "PRTree Fit to cos(x)"
 )
-points(
-  X[order(X)], y[order(X)],
-  xlab = "x", ylab = "cos(x)", col = "red"
+points(X[ord], y[ord], col = "red", cex = 0.5)
+legend("topright",
+  legend = c("Fitted", "Observed"),
+  col = c("blue", "red"), lty = c(1, NA), pch = c(NA, 1)
 )
 
+# Diagnostic plots
+par(mar = c(3, 4, 1.5, 1))
+plot(reg, y, which = c(1, 4, 2, 5), ncol = 2)
+
+# Plotting the final tree
+plot_tree(reg, max_bins = 10)
+
+}
+\seealso{
+\link{pr_tree_cv} for cross-validation options.
+
+\link{pr_tree_control} for setting control parameters.
+
+\link{expand_sigma_grid} for creating custom sigma grids.
 }

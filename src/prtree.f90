@@ -21,13 +21,13 @@
 ! sorting, sequence generation, vector/matrix initialization and least square
 ! estimation.
 !
-! Part 2: defines the main interface for the PRTree algorithm,
+! Part 3: defines the main interface for the PRTree algorithm,
 ! including training, prediction, and model evaluation functions.
 !
 ! Build upon the original PRTree implementation by Alisson S. Neimaier.
 !
 !-------------------------------------------------------------------------------
-! This version: July/2025
+! This version: May/2026
 ! By Taiane S. Prass - PPGEst/UFRGS
 !-------------------------------------------------------------------------------
 module prtree_main
@@ -35,163 +35,391 @@ module prtree_main
   use prtree_misc
   implicit none
 
-  interface return_tree
-    ! These subroutines extract components from the tree model
-    ! either to return to R or to process the test sample
-    ! Added July/2025
-    module procedure return_tree_train
-    module procedure return_tree_test
-  end interface return_tree
-
 contains
+  pure subroutine get_feature_bounds(node_id, feat, nodes_info, thresholds, b_lower, b_upper)
+    !------------------------------------------------------------------------------
+    ! Reconstructs bounds only for a specific feature by tracing its ancestry.
+    ! Eliminates the need for a global bounds matrix.
+    !
+    ! ARGUMENTS
+    !   node_id    [in]  : Integer, id of the current node.
+    !   feat       [in]  : Integer, id of the current feature.
+    !   nodes_info [in]  : Integer, matrix with nodes information.
+    !   thresholds [in]  : Real, vector of thresholds for all nodes.
+    !   b_lower    [out] : Real, lower bound for the current feature.
+    !   b_upper    [out] : Real, upper bound for the current feature.
+    !
+    ! NOTES
+    !   - Left children are always EVEN, right children are always ODD.
+    !
+    ! Added May 2026
+    !   - replaces the old bounds matrix with a more efficient approach that only
+    !     retracks bounds for the current feature.
+    !------------------------------------------------------------------------------
+    implicit none
+    integer, intent(in) :: node_id, feat
+    integer, intent(in) :: nodes_info(:,:)
+    real(dp), intent(in) :: thresholds(:)
+    real(dp), intent(out) :: b_lower, b_upper
+    integer :: curr, parent, split_feat, offset, ncol_ni
+
+    b_lower = neg_inf
+    b_upper = pos_inf
+    ncol_ni = size(nodes_info, 2)
+    offset = 5 - ncol_ni
+    curr = node_id
+
+    do while (curr > 1)
+      parent = nodes_info(curr, idx_ni_father - offset)
+      split_feat = nodes_info(parent, idx_ni_feature - offset)
+      if (split_feat == feat) then
+        ! Left children are always EVEN, right children are always ODD
+        if (mod(curr, 2) == 0) then
+          if (b_upper >= pos_inf) b_upper = thresholds(parent)
+        else
+          if (b_lower <= neg_inf) b_lower = thresholds(parent)
+        end if
+        if (b_lower > neg_inf .and. b_upper < pos_inf) exit
+      end if
+      curr = parent
+    end do
+  end subroutine get_feature_bounds
+
+  pure subroutine get_node_imp_features(node_id, nodes_info, imp_feat, n_imp)
+    !-------------------------------------------------------------------------------------
+    ! Reconstructs important features list by tracing ancestry, replacing bounds array.
+    ! Eliminates the need for a global bounds matrix.
+    !
+    ! ARGUMENTS
+    !   node_id    [in]  : Integer, id of the current node.
+    !   nodes_info [in]  : Integer, matrix with nodes information.
+    !   imp_feat   [out] : Integer, vector of important features for the current node.
+    !   n_imp      [out] : Integer, number of important features for the current node.
+    !
+    ! NOTES
+    !   - Important features are collected by tracing the ancestry of the current node.
+    !   - The list is unique and ordered by depth (closest ancestors first).
+    !
+    ! Added May 2026
+    !  - replaces the old bounds matrix with a more efficient approach that only
+    !  - retracks important features for the current node.
+    !  - eliminates the need for a global important features matrix.
+    !  - ensures that the important features list is unique and ordered by depth.
+    !-------------------------------------------------------------------------------------
+    implicit none
+    integer, intent(in) :: node_id
+    integer, intent(in) :: nodes_info(:,:)
+    integer, intent(out) :: imp_feat(:)
+    integer, intent(out) :: n_imp
+    integer :: curr, parent, split_feat, i, offset, ncol_ni
+    logical :: already_added
+
+    ncol_ni = size(nodes_info, 2)
+    offset = 5 - ncol_ni
+    n_imp = 0
+    curr = node_id
+
+    do while (curr > 1)
+      parent = nodes_info(curr, idx_ni_father - offset)
+      split_feat = nodes_info(parent, idx_ni_feature - offset)
+      if (split_feat > 0) then
+        already_added = .false.
+        do i = 1, n_imp
+          if (imp_feat(i) == split_feat) then
+            already_added = .true.
+            exit
+          end if
+        end do
+        if (.not. already_added) then
+          n_imp = n_imp + 1
+          imp_feat(n_imp) = split_feat
+        end if
+      end if
+      curr = parent
+    end do
+    if (n_imp == 0) then
+      n_imp = 1
+      imp_feat(1) = 1
+    end if
+  end subroutine get_node_imp_features
+
   !======================================================
   ! STEP 1: start the tree model
   ! Initialization performed:
-  !   => tree%train: COMPLETE
-  !   => tree%test : NONE (set after, if needed)
-  !   => tree%ctrl : COMPLETE
-  !   => tree%net  : NONE (set after)
-  !   => tree%dist : COMPLETE
   !======================================================
-  pure subroutine set_tree_model(tree, n_obs, n_feat, y, x, int_param, dble_param)
-    !----------------------------------------------------------------------------
-    ! Allocates and initializes the tree structure and input data.
-    ! Must be called once before building the tree.
-    ! Initialization performed:
-    !   => tree%train: COMPLETE: set all variables
-    !   => tree%test : NONE (set after, if needed)
-    !   => tree%ctrl : COMPLETE: set all variables
-    !   => tree%net  : PARTIAL: allocates region and yhat
-    !   => tree%dist : COMPLETE: set all variables
+  subroutine print_starting_message(tree)
+    !----------------------------------------------------------------------
+    ! Prints the starting message for the PRTree algorithm.
     !
     ! ARGUMENTS
-    !   tree       [out] : tree_model, tree object to initialize.
-    !   n_obs      [in]  : Integer, number of observations.
-    !   n_feat     [in]  : Integer, number of features.
-    !   y          [in]  : Real(dp), response vector.
-    !   X          [in]  : Real(dp), feature matrix.
-    !   int_param  [in]  : Integer(:), parameters to build the tree
-    !                      [fill, crit, max_tn, max_d, min_obs, n_cand, by_node, dist_id]
-    !   dble_param [in]  : Real(dp), parameters to build the tree
-    !                      [min_prop, min_prob, cp, par]
+    !   tree [in] : tree_model, tree object.
+    !
+    ! Added May 2026
+    !----------------------------------------------------------------------
+    implicit none
+    type(tree_model), intent(in) :: tree
+    ! Print initialization parameters
+    call labelpr("===================================== ", -1)
+    call labelpr("===  Initializing PRTree model == ", -1)
+    call labelpr("===================================== ", -1)
+    call intpr1("    Observations (n_train):", -1, tree%n_train)
+    call intpr1("    Features (n_feat):", -1, tree%n_feat)
+    call intpr1("    Max terminal nodes (max_tn):", -1, tree%max_tn)
+    call intpr1("    Min observations (min_obs):", -1, tree%min_obs)
+    call dblepr1("    Min proportion (min_prop):", -1, tree%min_prop)
+    call dblepr1("    Min probability (min_prob):", -1, tree%min_prob)
+    call dblepr1("    Complexity parameter (cp):", -1, tree%cp)
+    call intpr1("     Filling type (fill):", -1, tree%fill)
+    call intpr1("     Proxy criterion (crit: 1 = mean, 2 = variance, 3 = both):", -1, tree%crit)
+    call labelpr(" ", -1)
+
+    ! Print distribution parameters
+    call labelpr("==============================================", -1)
+    call labelpr("===== Setting the distribution parameters ====", -1)
+    call labelpr("==============================================", -1)
+    select case (tree%dist%dist_id)
+    case (1)
+      call labelpr("Using the standard Gaussian distribution", -1)
+    case (2)
+      call dblepr1("Using the Log-normal distribution with meanlog = 0 and sdlog = ", -1, tree%dist%dist_par)
+    case (3)
+      call dblepr1("Using the Student's t distribution with df = ", -1, tree%dist%dist_par)
+    case (4)
+      call dblepr1("Using the Gamma distribution with scale = 1 and shape = ", -1, tree%dist%dist_par)
+    end select
+    call labelpr(" ", -1)
+  end subroutine print_starting_message
+
+  subroutine set_tree_model(tree, int_param, dble_param, keep_full, n_obs, &
+    n_train, n_feat, y_train, x_train, y_test, x_test)
+    !----------------------------------------------------------------------
+    ! Allocates and initializes the tree structure and input data.
+    ! Must be called once before building the tree.
+    !
+    ! ARGUMENTS
+    !  tree       [inout] : tree_model, tree object to update.
+    !  int_param  [in]    : Integer, parameters to build the tree
+    !                       [fill, crit, max_tn, max_d, min_obs, n_cand, by_node, dist_id]
+    !  dble_param [in]    : Real, parameters to build the tree
+    !                       [min_prop, min_prob, cp, par]
+    !  keep_full  [in]    : logical, if .true., return the full tree structure;
+    !                       if .false., return only mse values.
+    !  n_obs      [in]    : Integer, number of observations.
+    !  n_train    [in]    : Integer, number of observations in the training data.
+    !  n_feat     [in]    : Integer, number of features.
+    !  y_train    [in]    : Real, response vector for training data.
+    !  x_train    [in]    : Real, feature matrix for training data.
+    !  y_test     [in]    : Real, response vector for testing data.
+    !  x_test     [in]    : Real, feature matrix for testing data.
     !
     ! Added July/2025
-    !----------------------------------------------------------------------------
+    ! Last update: May/2026
+    !  - added initialization for the test data
+    !----------------------------------------------------------------------
     implicit none
-    type(tree_model), intent(out) :: tree
-    integer, intent(in) :: n_obs, n_feat
-    real(dp), intent(in) :: y(n_obs), x(n_obs, n_feat)
-    integer, intent(in) :: int_param(8)
+    ! tree object
+    type(tree_model), intent(inout) :: tree
+    ! parameters
+    integer, intent(in) :: int_param(10)
     real(dp), intent(in) :: dble_param(4)
+    logical, intent(out) :: keep_full
+    ! trainning and testing data
+    integer, intent(in) :: n_obs, n_train, n_feat
+    real(dp), intent(in), target, contiguous :: y_train(:), x_train(:, :)
+    real(dp), intent(in), target, contiguous :: y_test(:)
+    real(dp), intent(in), target, contiguous :: x_test(:, :)
 
-    ! Set input data and parameters (all)
-    tree%train%n_obs = n_obs
-    tree%train%n_feat = n_feat
-    tree%train%fill = int_param(1)
-    tree%train%y = y
-    tree%train%x = x
-    tree%train%sigma = vector(n_feat, source=0.0_dp)
-    tree%train%na = isnan(x)
-    tree%train%n_miss = count(tree%train%na, dim=1)
-    tree%train%any_na = sum(tree%train%n_miss) > 0
+    !--------------------------------------------------
+    ! Step A: Set the tree parameters
+    !--------------------------------------------------
+    ! Building criteria (all)
+    tree%fill = int_param(1)
+    tree%crit = int_param(2)
+    tree%max_tn = int_param(3)
+    tree%max_d = int_param(4)
+    tree%min_obs = int_param(5)
+    tree%n_cand = int_param(6)
+    tree%by_node = int_param(7) == 1
+    tree%min_prop = dble_param(1)
+    tree%min_prob = dble_param(2)
+    tree%cp = dble_param(3)
 
-    ! Set building criteria (all)
-    tree%ctrl%crit = int_param(2)
-    tree%ctrl%max_tn = int_param(3)
-    tree%ctrl%max_d = int_param(4)
-    tree%ctrl%min_obs = int_param(5)
-    tree%ctrl%n_cand = int_param(6)
-    tree%ctrl%by_node = int_param(7) == 1
-    tree%ctrl%min_prop = dble_param(1)
-    tree%ctrl%min_prob = dble_param(2)
-    tree%ctrl%cp = dble_param(3)
-
-    ! Initialize the argsDist object
+    ! argsDist object
     tree%dist%dist_id = int_param(8)
     tree%dist%dist_par = dble_param(4)
+
+    ! print info level
+    tree%printinfo = int_param(9)
+
+    ! flag for returning the full tree structure or only mse values
+    keep_full = (int_param(10) == 1)
+
+    !-----------------------------------------------------------------
+    ! Step B: Set information for the training and testing data
+    !-----------------------------------------------------------------
+    tree%n_obs = n_obs
+    tree%n_feat = n_feat
+    allocate(tree%sigma(n_feat), source=0.0_dp)
+
+    tree%n_train = n_train
+    tree%y_train => y_train
+    tree%x_train => x_train
+    tree%na = isnan(x_train)
+    tree%n_miss = count(tree%na, dim=1)
+    tree%any_na = any(tree%n_miss > 0)
+
+    tree%n_test = n_obs - n_train
+    tree%x_test => x_test
+    tree%y_test => y_test
+
+    if (tree%printinfo >= log_base) call print_starting_message(tree)
   end subroutine set_tree_model
+
+  subroutine assign_pointers(tree, keep_full, n_sigmas, yhat_train, yhat_test, &
+      xregion, p_train, p_test, gammahat, nodes_info, thresholds)
+    !----------------------------------------------------------------------
+    ! Assigns pointers for the training and testing data, probabilities, and region assignments.
+    !
+    ! ARGUMENTS
+    !   tree       [inout] : tree_model, tree object.
+    !   keep_full  [in]    : logical, if .true., return the full tree structure;
+    !                        if .false., return only mse values.
+    !   n_sigmas   [in]    : Integer, number of candidates for sigma selection
+    !   yhat_train [in]    : Real, predicted values for training data (n_train).
+    !   yhat_test  [in]    : Real, predicted values for testing data (n_test).
+    !   xregion    [in]    : Integer, assigned region for each training observation (n_train).
+    !   p_train    [in]    : Real, matrix P for training data (n_train x max_tn).
+    !   p_test     [in]    : Real, matrix P for testing data (n_test x max_tn).
+    !   gammahat   [in]    : Real, coefficients for the tree (max_tn).
+    !   nodes_info [in]    : Integer, matrix with nodes information
+    !   thresholds [in]    : Real, vector of thresholds
+    !
+    ! Added May/2026
+    !  - added pointers to matrices and vectore already allocated in R to avoid
+    !    unnecessary copying and allocation in Fortran.
+    !----------------------------------------------------------------------
+    implicit none
+    type(tree_model), intent(inout), target :: tree
+    logical, intent(in) :: keep_full
+    integer, intent(in) :: n_sigmas
+    integer, intent(in), target, contiguous :: xregion(:)
+    real(dp), intent(in), target, contiguous :: yhat_train(:)
+    real(dp), intent(in), target, contiguous :: yhat_test(:)
+    real(dp), intent(in), target, contiguous :: p_train(:, :)
+    real(dp), intent(in), target, contiguous :: p_test(:, :)
+    real(dp), intent(in), target, contiguous :: gammahat(:)
+    real(dp), intent(in), target, contiguous :: thresholds(:)
+    integer, intent(in), target, contiguous :: nodes_info(:, :)
+
+    ! (a) if kepp_full = .false. R objects are dummy arguments use "temp" to build the tree.
+    ! (b) if kepp_full = .true. and n_sigmas > 1 use "temp" to build and the R object to save.
+    ! (c) if kepp_full = .true. and n_sigmas = 1 point directly to the R object
+    if(.not. keep_full .or. n_sigmas > 1) then
+      ! xregion
+      allocate(tree%region_temp(tree%n_train))
+      tree%region => tree%region_temp
+
+      ! yhat_train and yhat_test
+      allocate(tree%yhat_temp(tree%n_train))
+      tree%yhat_train => tree%yhat_temp
+      if(tree%n_test > 0) then
+        allocate(tree%yhat_ttemp(tree%n_test))
+        tree%yhat_test => tree%yhat_ttemp
+      end if
+
+      ! nodes_info
+      allocate(tree%nodes_info_temp(2 * tree%max_tn - 1, 5))
+      tree%nodes_info => tree%nodes_info_temp
+
+      ! thresholds
+      allocate(tree%thresholds_temp(2 * tree%max_tn - 1))
+      tree%thresholds => tree%thresholds_temp
+    else
+      tree%region => xregion
+      tree%yhat_train => yhat_train
+      tree%yhat_test => yhat_test
+      tree%nodes_info => nodes_info
+      tree%thresholds => thresholds
+    end if
+
+    ! Set p_train, p_test and gammahat
+    ! (a) if kepp_full = .false. R objects are dummy arguments use "temp" to build the tree.
+    ! (b) if kepp_full = .true. and n_sigmas > 1 use R object as working array and "temp" as
+    !     helper to save the best candidate during the search for the best sigma.
+    ! (c) if kepp_full = .true. and n_sigmas = 1 point directly to the R object.
+    if(.not. keep_full) then
+      ! p_train and p_test
+      allocate(tree%p_temp(tree%n_train, tree%max_tn))
+      tree%p => tree%p_temp
+      if(tree%n_test > 0) then
+        allocate(tree%p_test_temp(tree%n_test, tree%max_tn))
+        tree%p_test => tree%p_test_temp
+      end if
+
+      ! gammahat
+      allocate(tree%gamma_temp(tree%max_tn))
+      tree%gammahat => tree%gamma_temp
+    else
+      tree%p => p_train
+      tree%p_test => p_test
+      tree%gammahat => gammahat
+    end if
+  end subroutine assign_pointers
 
   !===================================================================
   ! STEP 2: Initialize the root node
   ! Initialization performed:
-  !   => tree%net: COMPLETE  (2.1: start_root)
-  !   => tree%net%nodes: COMPLETE (2.2: start_nodes_root)
-  !   => tree%net%nodes%state: PARTIAL (2.3: start_node_state_root)
+  !   => tree: COMPLETE  (2.1: start_root)
+  !   => tree%nodes: COMPLETE (2.2: start_nodes_root)
+  !   => tree%nodes%state: PARTIAL (2.3: start_node_state_root)
   !     - %imp_feature: will be initialized DURING split (n_imp = 0)
   !     - %best: will be initialized DURING split. (update = .false.)
   !===================================================================
-  pure subroutine start_node_state_root(state, n_obs, n_feat)
-    !------------------------------------------------------------------------
-    ! Initializes the node state and missing value info for the root node.
-    ! Some variables will require initialization/update before use
-    !   - imp_feature: will be initialized DURING split (n_imp = 0)
-    !   - na_info: will be initialized BEFORE split
-    !   - thresholds: will be updated BEFORE split
-    !   - best: will be initialized DURING split. (update = .false.)
-    !
-    ! ARGUMENTS
-    !   state  [inout] : node_state, state to initialize.
-    !   n_obs  [in]    : Integer, number of observations.
-    !   n_feat [in]    : Integer, number of features.
-    !
-    ! Added July/2025
-    !------------------------------------------------------------------------
-    implicit none
-    type(node_state), intent(out) :: state
-    integer, intent(in) :: n_obs, n_feat
-    type(info_thr) :: null_thr
-    integer :: i
-
-    ! Set the initial status
-    state%update = .true.    ! need update
-    state%n_cand_found = 0   ! no candidates found at this point
-    state%n_obs = n_obs      ! all data starts in the root node
-    state%idx = [(i, i=1, n_obs)]
-    state%thresholds = vector(n_feat, null_thr) ! update after exiting
-    state%n_imp = 0 ! to start the update
-    state%imp_feat = [0] ! to start the update
-  end subroutine start_node_state_root
-
-  pure subroutine start_nodes_root(nodes, n_obs, n_feat)
+  subroutine start_nodes_root(node, n_train, n_feat, max_tn)
     !-------------------------------------------------------------
     !  Allocates and initializes the root node and its bounds.
     !
     ! ARGUMENTS
-    !   nodes  [inout] : tree_node(:), array of nodes.
-    !   n_obs  [in]    : Integer, number of observations.
+    !   node   [inout] : tree_node(:), array of nodes.
+    !   n_train[in]    : Integer, number of observations.
     !   n_feat [in]    : Integer, number of features.
+    !   max_tn [in]    : Integer, maximum number of terminal nodes.
+    !
+    ! Details:
+    ! Some variables will require initialization/update before use
+    !   - imp_feature: will be initialized DURING split (n_imp = 0)
+    !   - thresholds: will be updated BEFORE split
+    !   - best: will be initialized DURING split. (update = .false.)
     !
     ! Added July/2025
     !-------------------------------------------------------------
     implicit none
-    type(tree_node), allocatable, intent(out) :: nodes(:)
-    integer, intent(in) :: n_obs, n_feat
-    type(tree_node) :: node
+    type(tree_node), allocatable, intent(out) :: node(:)
+    integer, intent(in) :: n_train, n_feat, max_tn
+    integer :: i
 
     ! Allocate the nodes object and the bounds argument
-    !  - In the root node, -inf < X_j < inf
-    node%id = 1
-    node%isterminal = 1
-    node%fathernode = 0
-    node%depth = 0
-    node%feature = 0
-    node%threshold = 0.0_dp
-    node%split = .true.
-    node%bounds = matrix(n_feat, 2, neg_inf)
-    node%bounds(:, 2) = pos_inf         ! update the second column
+    allocate(node(2 * max_tn - 1))
 
     ! initializes the state variables
-    call start_node_state_root(node%state, n_obs, n_feat)
-    nodes = [node] ! ensure that the node object is an array
+    node(1)%split = .true.
+    node(1)%update = .true.    ! need update
+    node(1)%n_cand_found = 0   ! no candidates found at this point
+    node(1)%n_obs_node = n_train ! all data starts in the root node
+    node(1)%n_imp = 0          ! to start the update
+    node(1)%idx = [(i, i=1, n_train)]
+    allocate(node(1)%imp_feat(n_feat))
+    node(1)%imp_feat = 0       ! to start the update
+    allocate(node(1)%thresholds(n_feat))
   end subroutine start_nodes_root
 
   subroutine start_root(tree)
     !--------------------------------------------------------------
     ! Initializes the tree structure and root node.
     ! Initialization performed:
-    !   => tree%net: COMPLETE  (2.1: start_root)
-    !   => tree%net%nodes: COMPLETE (2.2: start_nodes_root)
-    !   => tree%net%nodes%state: PARTIAL (2.3: start_node_state_root)
+    !   => tree: COMPLETE  (2.1: start_root)
+    !   => tree%nodes: COMPLETE (2.2: start_nodes_root)
+    !   => tree%nodes%state: PARTIAL (2.3: start_node_state_root)
     !     - %imp_feature: will be initialized DURING split (n_imp = 0)
     !     - %best: will be initialized DURING split. (update = .false.)
     !
@@ -202,84 +430,82 @@ contains
     !--------------------------------------------------------------
     implicit none
     type(tree_model), intent(inout) :: tree
-    integer :: f, n, i
-    integer, allocatable :: idx(:)
+    integer :: f, n
+    logical, allocatable :: x_mask(:)
 
     ! At start number of nodes = number of terminal nodes
-    tree%net%n_nodes = 1
-    tree%net%n_tn = 1
-    tree%net%n_cand_found = 0
+    tree%n_nodes = 1
+    tree%n_tn = 1
+    tree%n_cand_found = 0
 
     ! In the root node
     ! - Region = 1 and tn_id = 1
     ! - P = 1 and gammahat = mean(y)
-    tree%net%region = vector(tree%train%n_obs, 1)
-    tree%net%tn_id = [1]
-    tree%net%n_zero = [0] ! (all P > eps)
-    tree%net%p_zero = matrix(tree%train%n_obs, 1, source=.false.)
-    tree%net%p = matrix(tree%train%n_obs, 1, 1.0_dp)
-    tree%net%gammahat = [sum(tree%train%y) / tree%train%n_obs]
-    tree%net%yhat = vector(tree%train%n_obs, tree%net%gammahat(1))
-    tree%net%mse = sum(tree%train%y**2) - tree%train%n_obs * tree%net%gammahat(1)**2
+    ! Use vector so there is no need to check if the object is already allocated
+    tree%region = 1
+    if (allocated(tree%tn_id)) deallocate(tree%tn_id)
+    allocate(tree%tn_id(tree%max_tn))
+    tree%tn_id(1) = 1
+    tree%p = 0.0_dp
+    tree%p(:, 1) = 1.0_dp
+    tree%gammahat = 0.0_dp
+    tree%gammahat(1) = sum(tree%y_train) / tree%n_train
+    tree%yhat_train = tree%gammahat(1)
+    tree%mse_train = sum(tree%y_train**2) - tree%n_train * tree%gammahat(1)**2
+
+    ! initialize the nodes_info matrix for the root
+    tree%nodes_info = 0
+    tree%nodes_info(1, idx_ni_id) = 1
+    tree%nodes_info(1, idx_ni_terminal) = 1
+    tree%nodes_info(1, idx_ni_father) = 0
+    tree%nodes_info(1, idx_ni_depth) = 0
+    tree%nodes_info(1, idx_ni_feature) = 0
+
+    ! initialize the thresholds array
+    tree%thresholds = 0.0_dp
 
     ! Allocate the root node and its components
-    call start_nodes_root(tree%net%nodes, tree%train%n_obs, tree%train%n_feat)
+    call start_nodes_root(tree%nodes, tree%n_train, tree%n_feat, tree%max_tn)
 
     ! Loop to compute the thresholds for each feature
     !  - checks if the node can be splitted using min_obs
-    if (printinfo >= log_debug) then
+    if (tree%printinfo >= log_debug) then
       ! Debug: thresholds
       call labelpr("------------------------------------------------------------------", -1)
       call labelpr("    Getting the thresholds for the features at the root node", -1)
       call labelpr("------------------------------------------------------------------", -1)
     end if
 
-    loop_find_thr: do f = 1, tree%train%n_feat
+    allocate(x_mask(tree%n_train))
+    loop_find_thr: do f = 1, tree%n_feat
       ! Create mask for non-missing values of feature f
-      if (tree%train%n_miss(f) == 0) then
-        idx = [(i, i=1, tree%train%n_obs)]
+      if (tree%n_miss(f) == 0) then
+        x_mask = .true.
       else
-        idx = pack([(i, i=1, tree%train%n_obs)], mask=.not. tree%train%na(:, f))
+        x_mask = .not. tree%na(:, f)
       end if
-      n = tree%train%n_obs - tree%train%n_miss(f)
+      n = tree%n_train - tree%n_miss(f)
 
       ! Skip feature if insufficient non-missing values
-      if (n < 2 * tree%ctrl%min_obs) then
-        tree%net%nodes(1)%state%thresholds(f)%nt = 0
+      if (n < 2 * tree%min_obs) then
+        tree%nodes(1)%thresholds(f)%nt = 0
         cycle
       end if
 
       ! Find thresholds for current feature (considering only non-missing values)
-      call find_thresholds(tree%ctrl%min_obs, n, tree%train%x(idx, f), tree%net%nodes(1)%state%thresholds(f))
+      call find_thresholds(tree%min_obs, tree%x_train, x_mask, f, tree%nodes(1)%thresholds(f))
 
-      if (printinfo >= log_debug) then
+      if (tree%printinfo >= log_debug) then
         ! Debug: thresholds found
         call intpr1("    Feature ", -1, f)
-        if (tree%net%nodes(1)%state%thresholds(f)%nt == 0) then
+        if (tree%nodes(1)%thresholds(f)%nt == 0) then
           call labelpr("    No thresholds found", -1)
         else
-          call intpr1("    Number of thresholds:", -1, &
-                      tree%net%nodes(1)%state%thresholds(f)%nt)
+          call intpr1("    Number of thresholds:", -1, tree%nodes(1)%thresholds(f)%nt)
         end if
         call labelpr(" ", -1)
       end if
     end do loop_find_thr
-
-    ! If there are missing values, set the NA mask for node(1)%state
-    ! Here p > eps for all obserations, so just copy the NA mask
-    if (tree%train%any_na) then
-      ! intitialize the na_info variable
-      select case (tree%train%fill)
-      case (0, 1)
-        ! Both masks required. The mask for any_na will be updated during split
-        n = tree%train%n_feat + 1
-        tree%net%nodes(1)%state%na_info = matrix(tree%train%n_obs, n, .false.)
-        tree%net%nodes(1)%state%na_info(:, 1:n - 1) = tree%train%na
-      case (2)
-        ! Only na_f is required
-        tree%net%nodes(1)%state%na_info = tree%train%na
-      end select
-    end if
   end subroutine start_root
 
   !===============================================================================
@@ -291,7 +517,6 @@ contains
   !   3.2 update_state_thresholds:
   !      If tn > 1, update thresholds for child nodes
   !      If tn > 1 update the important features for child nodes
-  !      If any_na update the na_info masks for child nodes (NA and P > eps)
   !   3.3 find_node_splits:
   !       Find the best n_candidates by node.
   !       (each node only goes through the process once)
@@ -310,69 +535,76 @@ contains
     !-------------------------------------------------------------
     implicit none
     type(tree_node), intent(inout) :: node
-    type(node_state) :: null_state
 
     ! disable further splits
     node%split = .false.
 
     ! Information on splitting is no longer required.
     ! Deallocate the components from state variable
-    node%state = null_state
+    node%n_cand_found = 0
+    node%n_imp = 0
+    if (allocated(node%idx)) deallocate(node%idx)
+    if (allocated(node%imp_feat)) deallocate(node%imp_feat)
+    if (allocated(node%thresholds)) deallocate(node%thresholds)
+    if (allocated(node%best)) deallocate(node%best)
   end subroutine update_node_to_terminal
 
-  pure subroutine update_split_candidates(net, ctrl, n_obs, n_split, do_split)
+  pure subroutine update_split_candidates(tree, n_split, do_split)
     !---------------------------------------------------------------------------
     ! Checks which nodes are eligible for splitting based on the depth of
     ! the node and probability criteria. Number of observations are checked
     ! in another step
     !
     ! ARGUMENTS
-    !   net      [inout] : tree_net, tree structure.
-    !   ctrl     [inout] : tree_ctrl, control parameters.
-    !   n_obs    [in]    : Integer, number of observations.
+    !   tree     [inout] : tree_model, tree structure.
     !   n_split  [inout] : Integer, number of splittable nodes (old vs current).
     !   do_split [inout] : Integer, indexes of splittable nodes (old vs current).
     !
     ! Added July/2025
+    ! Last update: May/2026
+    !   - now passes tree instead of net, ctrl and n_obs
     !---------------------------------------------------------------------------
     implicit none
-    type(tree_net), intent(inout) :: net
-    type(tree_ctrl), intent(inout) :: ctrl
-    integer, allocatable, intent(inout) :: do_split(:)
-    integer, intent(in) :: n_obs
+    type(tree_model), intent(inout) :: tree
     integer, intent(inout) :: n_split
-    real(dp) :: perc_comp
-    integer :: j, cut(n_split + 2), n_found, tn_id, nodeid
+    integer, allocatable, intent(inout) :: do_split(:)
+    ! local variables
+    real(dp) :: perc_comp, multi, min_prob
+    integer :: j, n_found, tn_id, nodeid
+    integer, allocatable :: cut(:)
 
     ! copy the id of the previous splittable nodes
-    cut = [do_split, net%n_nodes - 1, net%n_nodes]
+    allocate(cut(n_split + 2))
+    cut = [do_split, tree%n_nodes - 1, tree%n_nodes]
 
     ! check the current split condition of the node
     !  - split condition can change during the search for thresholds
     !    when the number of observations is evaluated.
     !  - the node is updated to terminal when the split condition changes.
 
+    multi = 1.0_dp / real(tree%n_train, dp)
+    min_prob = 2.0_dp * tree%min_prob
     n_found = 0
     do j = 1, n_split + 2
       nodeid = cut(j)
 
-      if (.not. net%nodes(nodeid)%split) cycle ! node updated to terminal during the process
+      if (.not. tree%nodes(nodeid)%split) cycle ! node updated to terminal during the process
 
       ! Check stopping criteria (only for last two child nodes):
       !  - depth and the percentage of probabilities higher than a threshold
       !  - use P > 2 * min_prob as a proxy for the next division.
       if (j > n_split) then
-        if (net%nodes(nodeid)%depth >= ctrl%max_d) then
-          call update_node_to_terminal(net%nodes(nodeid))
+        if (tree%nodes_info(nodeid, idx_ni_depth) >= tree%max_d) then
+          call update_node_to_terminal(tree%nodes(nodeid))
           cycle
         end if
 
         ! P(child) < a, whenever P(father) < a.
         ! If a <= P(father) < 2*a implies P(child1) < a, whenever P(child2) > a
-        tn_id = merge(net%n_tn - 1, net%n_tn, j == n_split + 1)
-        perc_comp = count(net%p(:, tn_id) > 2.0_dp * ctrl%min_prob) / real(n_obs, dp)
-        if (perc_comp <= ctrl%min_prop) then
-          call update_node_to_terminal(net%nodes(nodeid))
+        tn_id = merge(tree%n_tn - 1, tree%n_tn, j == n_split + 1)
+        perc_comp = count(tree%p(:, tn_id) > min_prob) * multi
+        if (perc_comp <= tree%min_prop) then
+          call update_node_to_terminal(tree%nodes(nodeid))
           cycle
         end if
       end if
@@ -386,7 +618,7 @@ contains
     if (n_split > 0) do_split = cut(1:n_split)
   end subroutine update_split_candidates
 
-  subroutine print_message(left, f, n)
+  subroutine print_message(left, f, n, printinfo)
     !----------------------------------------------------------------------
     ! Helper subroutine to print debug messages about thresholds found
     ! for a given feature in a node.
@@ -395,12 +627,13 @@ contains
     !   left [in] : logical, .true. if left node, .false. if right node.
     !   f    [in] : Integer, feature index.
     !   n    [in] : Integer, number of thresholds found.
+    !   printinfo [in] : Integer, log level.
     !
     ! Added July/2025
     !----------------------------------------------------------------------
     implicit none
     logical, intent(in) :: left
-    integer, intent(in) :: f, n
+    integer, intent(in) :: f, n, printinfo
     if (printinfo >= log_debug) then
       ! Debug: thresholds found
       if (left) then
@@ -417,22 +650,17 @@ contains
     end if
   end subroutine print_message
 
-  subroutine update_state_thresholds(old_node, min_obs, n_feat, x, na, left_node, right_node, updated)
-    !--------------------------------------------------------------------------------------
+  subroutine update_state_thresholds(tree, updated, fa_id, l_id, r_id)
+    !----------------------------------------------------------------------
     ! Updates thresholds for child nodes after a split operation.
     ! Splits the threshold vector for current variable and recompute for others
     !
     ! ARGUMENTS
-    !   old_node    [inout] : type(tree_node), last splitted node.
-    !                         state%best is expected to contain only the best split.
-    !   min_obs     [in]    : Integer, minimum observations per node.
-    !   n_feat      [in]    : Integer, number of features.
-    !   X           [in]    : Real(dp), feature values (n_obs x n_feat) for splitted node.
-    !   na          [in]    : Logical, missing mask (n_obs x n_feat).
-    !   split       [in]    : logical, if .false. does not need update.
-    !   left_node   [inout] : type(tree_node), left node.
-    !   right_node  [inout] : type(tree_node), right node.
-    !   updated     [inout] : logical, if .true., new splits can be attempted
+    !   tree    [inout] : tree_model, the tree structure.
+    !   updated [inout] : logical(2), if .true., new splits can be attempted
+    !   fa_id   [in]    : Integer, id of the father node.
+    !   l_id    [in]    : Integer, id of the left child node.
+    !   r_id    [in]    : Integer, id of the right child node.
     !
     ! NOTES
     !   Thresholds are allocated during split and only updated here
@@ -442,25 +670,44 @@ contains
     !    - Preserves original threshold ordering
     !
     ! Added July/2025
-    !--------------------------------------------------------------------------------------
+    ! Last update: May/2026
+    !  removed the arguments from the parent node and replaced with the tree
+    !  structure to avoid slicing x and na.
+    !----------------------------------------------------------------------
     implicit none
-    type(tree_node), intent(inout) :: old_node
-    integer, intent(in) :: min_obs, n_feat
-    real(dp), intent(in) :: x(old_node%state%n_obs, n_feat)
-    logical, intent(in) :: na(old_node%state%n_obs, n_feat)
-    type(tree_node), intent(inout) :: left_node, right_node
+    type(tree_model), intent(inout) :: tree
     logical, intent(inout) :: updated(2)
-    ! Local variables
-    integer :: pos, i, f, feat, n_node
-    real(dp) :: thr
-    logical :: msk_left(old_node%state%n_obs)
-    logical :: msk_right(old_node%state%n_obs)
-    logical :: mask_miss(old_node%state%n_obs)
-    type(info_thr) :: feat_thr
-    integer :: n1, n2, n
-    integer, allocatable :: idx(:)
+    integer, intent(in) :: fa_id, l_id, r_id
 
-    if (printinfo >= log_debug) then
+    ! Local variables
+    integer :: pos, i, f, feat, n_node, n_obs_node
+    real(dp) :: thr
+    logical, allocatable :: msk_left(:)
+    logical, allocatable :: msk_right(:)
+    logical, allocatable :: mask_miss(:)
+    type(info_thr) :: feat_thr
+    integer :: n1, n2, n, n_train, ii
+    logical, allocatable :: x_mask(:)
+
+    n_train = tree%n_train
+    n_obs_node = tree%nodes(fa_id)%n_obs_node
+
+    ! masks for the observations in the left and right child nodes
+    ! intially set to .false. and updated to .true. for the observations in the node
+    !  - idx gives the indexes that need update
+    !  - best(1)%regid gives the region of the left child node (after split)
+    allocate(msk_left(n_train), source = .false.)
+    allocate(msk_right(n_train), source = .false.)
+    do i = 1, n_obs_node
+      ii = tree%nodes(fa_id)%idx(i)
+      msk_left(ii) = tree%nodes(fa_id)%best(1)%regid(i) == left_id
+      msk_right(ii) = .not. msk_left(ii)
+    end do
+
+    allocate(mask_miss(n_train)) ! mask for non-missing values in the node
+    allocate(x_mask(n_train))    ! mask for x values in the node (non-missing and in the l/r child node)
+
+    if (tree%printinfo >= log_debug) then
       ! Debug: thresholds found
       call labelpr("---------------------------------------------", -1)
       call labelpr("    Updating thresholds for the new nodes", -1)
@@ -468,93 +715,92 @@ contains
     end if
 
     ! splitting feature and threshold
-    feat = old_node%feature
-    thr = old_node%threshold
-
-    ! mask for left and right nodes
-    msk_left = old_node%state%best(1)%regid == left_id
-    msk_right = .not. msk_left
+    feat = tree%nodes_info(fa_id, idx_ni_feature)
+    thr = tree%thresholds(fa_id)
 
     ! counts the number of thresholds found globally (left and right)
     n1 = 0
     n2 = 0
 
-    if (left_node%split) left_node%state%thresholds%nt = 0
-    if (right_node%split) right_node%state%thresholds%nt = 0
+    if (tree%nodes(l_id)%split) tree%nodes(l_id)%thresholds%nt = 0
+    if (tree%nodes(r_id)%split) tree%nodes(r_id)%thresholds%nt = 0
 
-    do f = 1, n_feat
+    do f = 1, tree%n_feat
       ! current feature will be processed at the end of the loop
       if (f == feat) cycle
 
-      ! mask for non-missing values
-      mask_miss = .not. na(:, f)
+      ! mask for non-missing values in the current node
+      mask_miss =  .not. tree%na(:, f)
 
       ! recompute thresholds for left node
       n = 0         ! local counter
-      if (left_node%split) then
-        idx = pack([(i, i=1, old_node%state%n_obs)], mask=msk_left .and. mask_miss)
-        call find_thresholds(min_obs, size(idx), x(idx, f), left_node%state%thresholds(f))
-        n = left_node%state%thresholds(f)%nt
+      if (tree%nodes(l_id)%split) then
+        x_mask = msk_left .and. mask_miss
+        call find_thresholds(tree%min_obs, tree%x_train, x_mask, f, tree%nodes(l_id)%thresholds(f))
+        n = tree%nodes(l_id)%thresholds(f)%nt
         n1 = n1 + n
       end if
-      call print_message(.true., f, n)
+      call print_message(.true., f, n, tree%printinfo)
 
       ! recompute thresholds for right node
       n = 0
-      if (right_node%split) then
-        idx = pack([(i, i=1, old_node%state%n_obs)], mask=msk_right .and. mask_miss)
-        call find_thresholds(min_obs, size(idx), x(idx, f), right_node%state%thresholds(f))
-        n = right_node%state%thresholds(f)%nt
+      if (tree%nodes(r_id)%split) then
+        x_mask = msk_right .and. mask_miss
+        call find_thresholds(tree%min_obs, tree%x_train, x_mask, f, tree%nodes(r_id)%thresholds(f))
+        n = tree%nodes(r_id)%thresholds(f)%nt
         n2 = n2 + n
       end if
-      call print_message(.false., f, n)
+      call print_message(.false., f, n, tree%printinfo)
     end do
 
     ! Finds the position of thr in the thresholds vector
-    pos = findloc(old_node%state%thresholds(feat)%thr >= thr, value=.true., dim=1)
+    pos = findloc(tree%nodes(fa_id)%thresholds(feat)%thr >= thr, value=.true., dim=1)
 
     ! mask for non missing values
-    mask_miss = .not. na(:, feat)
+    mask_miss =  .not. tree%na(:, feat)
 
     ! thresholds information for splitting feature
-    feat_thr = old_node%state%thresholds(feat)
+    feat_thr = tree%nodes(fa_id)%thresholds(feat)
 
     ! LEFT NODE: can only split using thresholds < thr
     ! Since these observations are already in left node (msk = .true.),
     ! we only need to ensure the RIGHT child after split has >= min_obs
     n = 0   ! local counter
-    if (left_node%split .and. pos > 1) then ! There exist at least one thresholds < thr
+    if (tree%nodes(l_id)%split .and. pos > 1) then ! There exist at least one thresholds < thr
       do i = pos - 1, 1, -1                 ! Check from largest < thr downward
-        n_node = count(msk_left .and. mask_miss .and. x(:, feat) > feat_thr%thr(i))
-        if (n_node >= min_obs) then
-          left_node%state%thresholds(feat)%nt = i
-          left_node%state%thresholds(feat)%thr = feat_thr%thr(1:i)
+        n_node = count(tree%x_train(tree%nodes(l_id)%idx, feat) > feat_thr%thr(i) .and. &
+                       .not. tree%na(tree%nodes(l_id)%idx, feat))
+        if (n_node >= tree%min_obs) then
+          tree%nodes(l_id)%thresholds(feat)%nt = i
+          tree%nodes(l_id)%thresholds(feat)%thr = feat_thr%thr(1:i)
           exit
         end if
       end do
-      n = left_node%state%thresholds(feat)%nt
+      n = tree%nodes(l_id)%thresholds(feat)%nt
       n1 = n1 + n
     end if
-    call print_message(.true., feat, n)
+    call print_message(.true., feat, n, tree%printinfo)
 
     ! RIGHT NODE: can only split using thresholds > thr
     ! Since these observations are already in right node (msk = .false.),
     ! we only need to ensure the LEFT child after split has >= min_obs
     n = 0  ! local counter
-    if (right_node%split .and. pos < feat_thr%nt) then ! There exist at least one thresholds > thr
+    if (tree%nodes(r_id)%split .and. pos < feat_thr%nt) then ! There exist at least one thresholds > thr
       do i = pos + 1, feat_thr%nt                      ! Start after the exact split threshold
-        n_node = count(msk_right .and. mask_miss .and. x(:, feat) <= feat_thr%thr(i))
-        if (n_node >= min_obs) then
-          right_node%state%thresholds(feat)%nt = feat_thr%nt - i + 1
-          right_node%state%thresholds(feat)%thr = feat_thr%thr(i:feat_thr%nt)
+        n_node = count(tree%x_train(tree%nodes(r_id)%idx, feat) <= feat_thr%thr(i) .and. &
+                       .not. tree%na(tree%nodes(r_id)%idx, feat))
+        if (n_node >= tree%min_obs) then
+          tree%nodes(r_id)%thresholds(feat)%nt = feat_thr%nt - i + 1
+          tree%nodes(r_id)%thresholds(feat)%thr = feat_thr%thr(i:feat_thr%nt)
           exit
         end if
       end do
-      n = right_node%state%thresholds(feat)%nt
+      n = tree%nodes(r_id)%thresholds(feat)%nt
       n2 = n2 + n
     end if
-    call print_message(.false., feat, n)
+    call print_message(.false., feat, n, tree%printinfo)
 
+    ! check if the nodes can be splitted
     ! check if the nodes can be splitted
     updated(1) = (n1 > 0)
     updated(2) = (n2 > 0)
@@ -569,111 +815,97 @@ contains
     !   fail [inout] : logical, if .false. no threholds were found.
     !
     ! Added July/2025
+    ! Last update: May/2026
+    !   removed the arguments from the parent node and replaced with the tree structure
+    !   since the parent node is always the last splitted node, we can access it through
+    !   the tree structure. This also avoid slicing x and na
     !----------------------------------------------------------------------
     implicit none
-    type(tree_model), target, intent(inout) :: tree
+    type(tree_model), intent(inout) :: tree
     logical, intent(inout) :: fail
-    type(tree_node), pointer :: p_node, l_node, r_node
-    integer :: nodeid, j, n_tn, n
-    logical, allocatable :: msk(:)
-    logical :: update_zero(2)
-    type(info_thr) :: null_thr
     logical :: update(2)
+    integer :: fa_id, l_id, r_id
+    integer :: n_nodes
+    integer :: i, c_l, c_r
 
-    ! find the node that originated the two last nodes
-    nodeid = tree%net%nodes(tree%net%n_nodes)%fathernode
-    p_node => tree%net%nodes(nodeid)               ! parent node
-    l_node => tree%net%nodes(tree%net%n_nodes - 1) ! left child
-    r_node => tree%net%nodes(tree%net%n_nodes)     ! right child
+    ! number of nodes for the current tree structure (after split)
+    n_nodes = tree%n_nodes
 
-    if (.not. (l_node%split .or. r_node%split)) then
-      call update_node_to_terminal(l_node)
-      call update_node_to_terminal(r_node)
-      call update_node_to_terminal(p_node)
+    ! Get the id of the father node: the last two nodes are the child nodes
+    ! of the last splitted node
+    fa_id = tree%nodes_info(n_nodes, idx_ni_father)
+    l_id = n_nodes - 1
+    r_id = n_nodes
+
+    if (.not. (tree%nodes(l_id)%split .or. tree%nodes(r_id)%split)) then
+      call update_node_to_terminal(tree%nodes(l_id))
+      call update_node_to_terminal(tree%nodes(r_id))
+      call update_node_to_terminal(tree%nodes(fa_id))
       fail = .true.
       return
     end if
 
-    msk = p_node%state%best(1)%regid == left_id
-
-    if (l_node%split) then
-      l_node%state%n_obs = p_node%state%best(1)%n_l                        ! size
-      l_node%state%idx = pack(p_node%state%idx, mask=msk)                  ! indexes
-      l_node%state%thresholds = vector(tree%train%n_feat, source=null_thr) ! thresholds
+    if (tree%nodes(l_id)%split) then
+      tree%nodes(l_id)%n_obs_node = tree%nodes(fa_id)%best(1)%n_l  ! size
+      allocate(tree%nodes(l_id)%thresholds(tree%n_feat))           ! thresholds
+      allocate(tree%nodes(l_id)%imp_feat(tree%n_feat), source = 0) ! pre-allocate to max capacity
     end if
 
-    if (r_node%split) then
-      r_node%state%n_obs = p_node%state%best(1)%n_r                        ! size
-      r_node%state%idx = pack(p_node%state%idx, mask=.not. msk)            ! indexes
-      r_node%state%thresholds = vector(tree%train%n_feat, source=null_thr) ! thresholds
+    if (tree%nodes(r_id)%split) then
+      tree%nodes(r_id)%n_obs_node = tree%nodes(fa_id)%best(1)%n_r  ! size
+      allocate(tree%nodes(r_id)%thresholds(tree%n_feat))           ! thresholds
+      allocate(tree%nodes(r_id)%imp_feat(tree%n_feat), source = 0) ! pre-allocate to max capacity
     end if
 
-    call update_state_thresholds( &
-      p_node, tree%ctrl%min_obs, tree%train%n_feat, tree%train%x(p_node%state%idx, :), &
-      tree%train%na(p_node%state%idx, :), l_node, r_node, update)
+    if (tree%nodes(l_id)%split .and. tree%nodes(r_id)%split) then
+      allocate(tree%nodes(l_id)%idx(tree%nodes(l_id)%n_obs_node))
+      allocate(tree%nodes(r_id)%idx(tree%nodes(r_id)%n_obs_node))
+      c_l = 1
+      c_r = 1
+      do i = 1, tree%nodes(fa_id)%n_obs_node
+        if (tree%nodes(fa_id)%best(1)%regid(i) == left_id) then
+          tree%nodes(l_id)%idx(c_l) = tree%nodes(fa_id)%idx(i)
+          c_l = c_l + 1
+        else
+          tree%nodes(r_id)%idx(c_r) = tree%nodes(fa_id)%idx(i)
+          c_r = c_r + 1
+        end if
+      end do
+    else if (tree%nodes(l_id)%split) then
+      tree%nodes(l_id)%idx = pack(tree%nodes(fa_id)%idx, mask=tree%nodes(fa_id)%best(1)%regid == left_id)
+    else if (tree%nodes(r_id)%split) then
+      tree%nodes(r_id)%idx = pack(tree%nodes(fa_id)%idx, mask=tree%nodes(fa_id)%best(1)%regid == right_id)
+    end if
+
+    call update_state_thresholds(tree, update, fa_id, l_id, r_id)
 
     ! If no thresholds were found, deallocate the old node state to free memory
     fail = .not. (update(1) .or. update(2))
     if (fail) then
-      call update_node_to_terminal(p_node)
-      call update_node_to_terminal(l_node)
-      call update_node_to_terminal(r_node)
+      call update_node_to_terminal(tree%nodes(fa_id))
+      call update_node_to_terminal(tree%nodes(l_id))
+      call update_node_to_terminal(tree%nodes(r_id))
       return
     end if
 
     ! At least one child has valid thresholds, update the NA masks.
     ! Copy the important features from the parent node (if needed)
     if (update(1)) then
-      l_node%state%n_imp = p_node%state%best(1)%n_imp
-      l_node%state%imp_feat = p_node%state%best(1)%imp_feat
+      tree%nodes(l_id)%n_imp = tree%nodes(fa_id)%best(1)%n_imp
+      tree%nodes(l_id)%imp_feat = tree%nodes(fa_id)%best(1)%imp_feat
     else
-      call update_node_to_terminal(l_node)
+      call update_node_to_terminal(tree%nodes(l_id))
     end if
 
     if (update(2)) then
-      r_node%state%n_imp = p_node%state%best(1)%n_imp
-      r_node%state%imp_feat = p_node%state%best(1)%imp_feat
+      tree%nodes(r_id)%n_imp = tree%nodes(fa_id)%best(1)%n_imp
+      tree%nodes(r_id)%imp_feat = tree%nodes(fa_id)%best(1)%imp_feat
     else
-      call update_node_to_terminal(r_node)
-    end if
-
-    ! Early exit: if no missing values, reset the old node state to free memory
-    if (.not. tree%train%any_na) then
-      call update_node_to_terminal(p_node)
-      return
-    end if
-
-    ! Check if the p_zero matriz changed for the child nodes
-    ! P(father) <= eps implies P(child) <= eps
-    n_tn = tree%net%n_tn
-    j = findloc(tree%net%tn_id == nodeid, value=.true., dim=1)
-    update_zero = tree%net%n_zero(n_tn - 1:n_tn) > tree%net%n_zero(j)
-    n = size(p_node%state%na_info, 2)
-
-    ! Copy the masks or perform the update (if needed)
-    if (update(1)) then
-      l_node%state%na_info = p_node%state%best(1)%na_info
-      if (update_zero(1)) then
-        do j = 1, n
-          where (tree%net%p_zero(:, n_tn - 1))
-            l_node%state%na_info(:, j) = .false.
-          end where
-        end do
-      end if
-    end if
-    if (update(2)) then
-      r_node%state%na_info = p_node%state%best(1)%na_info
-      if (update_zero(2)) then
-        do j = 1, n
-          where (tree%net%p_zero(:, n_tn))
-            r_node%state%na_info(:, j) = .false.
-          end where
-        end do
-      end if
+      call update_node_to_terminal(tree%nodes(r_id))
     end if
 
     ! Reset the old node state to free memory
-    call update_node_to_terminal(p_node)
+    call update_node_to_terminal(tree%nodes(fa_id))
   end subroutine update_node_state
 
   pure subroutine update_best_list(n_cand, best, try, fail)
@@ -682,37 +914,38 @@ contains
     !
     ! ARGUMENTS
     !   n_cand [in]    : Integer, number of candidates.
-    !   best   [inout] : info_split(:), current best candidates.
+    !   best   [inout] : info_split, current best candidates.
     !   try    [in]    : info_split, new candidate.
     !   fail   [inout] : Logical, flag indicating if update failed.
     !
     ! Added July/2025
     !-----------------------------------------------------------------------------------
     integer, intent(in) :: n_cand
-    type(info_split), intent(inout) :: best(n_cand)
+    type(info_split), intent(inout) :: best(:)
     type(info_split), intent(in) :: try
     logical, intent(inout) :: fail
     integer :: worst_pos
 
     fail = .true.
-    worst_pos = minloc(best%score, dim=1)
+    worst_pos = minloc(best(1:n_cand)%score, dim=1)
     if (best(worst_pos)%score < try%score) then
       best(worst_pos) = try
       fail = .false.
     end if
   end subroutine update_best_list
 
-  pure subroutine update_best_list_global(n_best, best_id, best_score, nodeid, n_try, try, by_node, first, n_cand_found)
+  pure subroutine update_best_list_global(n_best, best_id, best_score, nodeid, &
+    n_try, try, by_node, first, n_cand_found)
     !-----------------------------------------------------------------------------------
     ! Updates the global list of best candidate splits across all nodes.
     !
     ! ARGUMENTS
     !   n_best       [in]    : Integer, maximum number of best candidates.
-    !   best_id      [inout] : integer(n_best,2), current best candidates.
-    !   best_score   [inout] : real(n_best), current best scores.
+    !   best_id      [inout] : integer, current best candidates.
+    !   best_score   [inout] : real, current best scores.
     !   nodeId       [in]    : Integer, node id.
     !   n_try        [in]    : Integer, number of new candidates.
-    !   try          [in]    : info_split(:), new candidates.
+    !   try          [in]    : info_split, new candidates.
     !   by_node      [in]    : Logical, flag for node-wise update.
     !   first        [inout] : Logical, flag for first update.
     !   n_cand_found [inout] : Integer, number of candidates found.
@@ -720,9 +953,9 @@ contains
     ! Added July/2025
     !-----------------------------------------------------------------------------------
     integer, intent(in) :: n_try, nodeid, n_best
-    integer, intent(inout) :: best_id(n_best, 2)
-    real(dp), intent(inout) :: best_score(n_best)
-    type(info_split), intent(in) :: try(n_try)
+    integer, intent(inout) :: best_id(:, :)
+    real(dp), intent(inout) :: best_score(:)
+    type(info_split), intent(in) :: try(:)
     logical, intent(in) :: by_node
     logical, intent(inout) :: first
     integer, intent(inout) :: n_cand_found
@@ -751,7 +984,7 @@ contains
     ! with the new candidate if it is better
     do i = 1, n_try
       ! find the worst candidate position
-      worst_pos = minloc(best_score, dim=1)
+      worst_pos = minloc(best_score(1:n_best), dim=1)
       if (try(i)%score > best_score(worst_pos)) then
         best_score(worst_pos) = try(i)%score
         best_id(worst_pos, 1) = nodeid
@@ -761,7 +994,7 @@ contains
     end do
   end subroutine update_best_list_global
 
-  pure subroutine get_idx_prob(idx_p, n_obs, n_info, na_info, n_prob, idx, fill, f, update_f)
+  pure subroutine get_idx_prob(idx_p, na, n_imp, imp_feat, n_prob, idx, fill, f)
     !---------------------------------------------------------------------------------
     ! Updates the index information for probability computation in the current node.
     ! This subroutine determines which observations should be used to compute the
@@ -770,66 +1003,72 @@ contains
     !
     ! ARGUMENTS
     !   idx_p    [inout] : idx_prob, information on missing values.
-    !   n_obs    [in]    : Integer, total number of observations.
-    !   na_info  [in]    : Logical, mask for missing values and p > eps
+    !   n_train  [in]    : Integer, total number of observations.
+    !   na       [in]    : Logical, complete missing mask matrix.
+    !   n_imp    [in]    : Integer, number of important features.
+    !   imp_feat [in]    : Integer, indices of important features.
     !   n_prob   [in]    : Integer, number of observations with probabilities > eps.
     !   idx      [in]    : Integer, global indices with p > eps.
     !   fill     [in]    : Integer, fill strategy for missing values.
     !   f        [in]    : Integer, splitting feature
-    !   update_f [in]    : loglical, if .true. the splitting feature was just
-    !                      added to the imp_feat vector
     !
     ! Added: July/2025
+    ! Last update: March/2026
+    !   - replaced n_miss(2) with n_miss_f and n_miss_any
     !---------------------------------------------------------------------------------
     implicit none
     type(idx_prob), intent(inout) :: idx_p
-    integer, intent(in) :: n_obs, n_info, n_prob, fill, f
-    integer, intent(in) :: idx(n_prob)
-    logical, intent(inout) :: na_info(n_obs, n_info)
-    logical, intent(in) :: update_f
+    integer, intent(in) :: n_imp, n_prob, fill, f
+    logical, intent(in) :: na(:, :)
+    integer, intent(in) :: imp_feat(:)
+    integer, intent(in) :: idx(:)
+    logical, allocatable :: any_na(:)
+    integer :: j
 
     idx_p%n_prob = n_prob
+
+    if(fill < 2) then
+      allocate(any_na(n_prob), source = .false.)
+      do j = 1, n_imp
+        any_na = any_na .or. na(idx, imp_feat(j))
+      end do
+    end if
+
     ! Set the indices to be used to update the probability matrix P
     select case (fill)
     case (0)
-      ! Update the mask for missing values
-      if (update_f) na_info(idx, n_info) = na_info(idx, n_info) .or. na_info(idx, f)
-
       ! Only depends on whether the observation has any missing values or not
-      idx_p%n_miss(1) = count(na_info(idx, n_info))
-      idx_p%n_miss(2) = 0  ! dummy value
-      if (idx_p%n_miss(1) > 0) then
-        idx_p%idx_any_na = pack(idx, na_info(idx, n_info))
+      idx_p%n_miss_any = count(any_na)  ! any missing
+      idx_p%n_miss_f = 0  ! dummy value
+      if (idx_p%n_miss_any > 0) then
+        idx_p%idx_any_na = pack(idx, any_na)
       end if
-      if (idx_p%n_miss(1) < n_prob) then
-        idx_p%idx = pack(idx,.not. na_info(idx, n_info))
+      if (idx_p%n_miss_any < n_prob) then
+        idx_p%idx = pack(idx,.not. any_na)
       end if
     case (1)
-      ! Update the mask for missing values
-      if (update_f) na_info(idx, n_info) = na_info(idx, n_info) .or. na_info(idx, f)
-
       ! Depends on both: whether the observation has any missing values or not
       ! and on whether the splitting feature is missing
-      idx_p%n_miss(1) = count(na_info(idx, n_info))  ! any missing
-      idx_p%n_miss(2) = count(na_info(idx, f))       ! Xf missing
-      if (idx_p%n_miss(2) > 0) then
-        idx_p%idx_na_f = pack(idx, na_info(idx, f))
+      idx_p%n_miss_any = count(any_na)  ! any missing
+      idx_p%n_miss_f = count(na(idx, f)) ! Xf missing
+      if (idx_p%n_miss_f > 0) then
+        idx_p%idx_na_f = pack(idx, na(idx, f))
       end if
-      if (idx_p%n_miss(2) < idx_p%n_miss(1)) then
-        idx_p%idx_any_na = pack(idx, na_info(idx, n_info) .and. (.not. na_info(idx, f)))
+      if (idx_p%n_miss_f < idx_p%n_miss_any) then
+        idx_p%idx_any_na = pack(idx, any_na .and. (.not. na(idx, f)))
       end if
-      if (idx_p%n_miss(1) < n_prob) then
-        idx_p%idx = pack(idx,.not. na_info(idx, n_info))
+      if (idx_p%n_miss_any < n_prob) then
+        idx_p%idx = pack(idx,.not. any_na)
       end if
     case (2)
       ! Only depends on whether the splitting feature is missing or not
-      idx_p%n_miss(1) = 0  ! dummy value
-      idx_p%n_miss(2) = count(na_info(idx, f))
-      if (idx_p%n_miss(2) > 0) then
-        idx_p%idx_na_f = pack(idx, na_info(idx, f))
+      idx_p%n_miss_any = 0  ! dummy value
+      idx_p%n_miss_f = count(na(idx, f))
+      if (idx_p%n_miss_f > 0) then
+        idx_p%idx_na_f = pack(idx, na(idx, f))
       end if
-      if (idx_p%n_miss(2) < n_prob) then
-        idx_p%idx = pack(idx,.not. na_info(idx, f))
+      if (idx_p%n_miss_f < n_prob) then
+        idx_p%idx = pack(idx,.not. na(idx, f))
       end if
     end select
   end subroutine get_idx_prob
@@ -841,10 +1080,10 @@ contains
     !
     ! ARGUMENTS
     !   info    [inout] : info_split, split information.
-    !   n_miss  [in]    : Integer, number of observations.
-    !   y       [in]    : Real(dp), response values for missing.
-    !   y_sum   [inout] : Real(dp), sum for left and right nodes.
-    !   idx     [in]    : Integer, index of the missing feature.
+    !   n_miss  [in]    : Integer, number of observations (local).
+    !   y       [in]    : Real, response values for missing (local).
+    !   y_sum   [inout] : Real, sum for left and right nodes (local).
+    !   idx     [in]    : Integer, index of the missing feature (local).
     !   crit    [in]    : Integer, selection of assignment criterion:
     !                      1 - Maximize difference in means
     !                      2 - Maximize between-node variability
@@ -855,9 +1094,9 @@ contains
     implicit none
     type(info_split), intent(inout) :: info
     integer, intent(in) :: n_miss
-    real(dp), intent(in) :: y(n_miss)
+    real(dp), intent(in) :: y(:)
     real(dp), intent(inout) :: y_sum(2)
-    integer, intent(in) :: idx(n_miss), crit
+    integer, intent(in) :: idx(:), crit
     real(dp) :: score(2)
     integer :: new_nl, new_nr
     real(dp) :: new_sl, new_sr
@@ -896,163 +1135,91 @@ contains
     end do
   end subroutine assign_missing
 
-  pure subroutine update_prob_no_na(argsd, n_idx, idx, n_obs, x_f, threshold, bounds, sigma_f, prob, p)
+  subroutine update_prob_no_na(argsd, n_idx, idx, x_f, threshold, &
+    b_lower, b_upper, sigma_f, prob, p)
     implicit none
-    !---------------------------------------------------------------------------------------
-    ! Computes the probability for the left and right node given a feature and a threshold
-    ! when there are no missing values in the important features.
+    !----------------------------------------------------------------------------
+    ! Computes the probability for the left and right node given a feature and a
+    ! threshold when there are no missing values in the important features.
     ! WARNING: This subrotuine implicitly assumes that for idx, all prob > eps.
     !
     ! ARGUMENTS:
     !   argsd     [in] : argsDist, distribution related parameters.
     !   n_idx     [in] : Integer, size of idx.
-    !   idx       [in] : Integer, global indices to compute P.
-    !   n_obs     [in] : Integer, number of observations.
-    !   x_f       [in] : Real(dp), the value for the splitting feature.
-    !   threshold [in] : Real(dp), the threshold for the splitting feature.
-    !   bounds    [in] : Real(dp), lower and upper bounds for the splitting feature.
-    !   sigma_f   [in] : Real(dp), sigma for splitting feature.
+    !   idx       [in] : Integer, global indices to compute P(idx, :).
+    !   x_f       [in] : Real, the value for the splitting feature.
+    !   threshold [in] : Real, the threshold for the splitting feature.
+    !   b_lower   [in] : Real, lower bound for the splitting feature.
+    !   b_upper   [in] : Real, upper bound for the splitting feature.
+    !   sigma_f   [in] : Real, sigma for splitting feature.
     !   prob      [in] : probability for the father node.
     !   p        [out] : probability for the left and right nodes.
     !
     ! Added July/2025
-    !---------------------------------------------------------------------------------------
+    !----------------------------------------------------------------------------
     type(argsdist), intent(in) :: argsd
-    integer, intent(in) :: n_obs, n_idx
-    integer, intent(in) :: idx(n_idx)
-    real(dp), intent(in) :: x_f(n_obs)
-    real(dp), intent(in) :: threshold, bounds(2), sigma_f
-    real(dp), intent(in) :: prob(n_obs)
-    real(dp), intent(inout) :: p(n_obs, 2)
-    real(dp) :: p_temp(n_idx)
+    integer, intent(in) :: n_idx
+    integer, intent(in) :: idx(:)
+    real(dp), intent(in) :: x_f(:)
+    real(dp), intent(in) :: threshold, b_lower, b_upper, sigma_f
+    real(dp), intent(in) :: prob(:)
+    real(dp), intent(inout) :: p(:, :)
+    real(dp), allocatable :: p_temp(:)
+    real(dp) :: p_sum
+    integer :: i
 
+    allocate(p_temp(n_idx))
     ! Compute P([-Inf, threshold])
     p_temp = pdist(argsd, n_idx, threshold, x_f(idx), sigma_f)
 
     ! If the lower bound is -Inf, the left node covers (-Inf, threshold]
     ! Otherwise, the left node covers [lower, threshold]
-    if (bounds(1) <= neg_inf) then
+    if (b_lower <= neg_inf) then
       p(idx, 1) = p_temp
     else
-      p(idx, 1) = p_temp - pdist(argsd, n_idx, bounds(1), x_f(idx), sigma_f)
+      p(idx, 1) = p_temp - pdist(argsd, n_idx, b_lower, x_f(idx), sigma_f)
     end if
 
     ! If the upper bound is Inf, the right node covers (threshold, Inf)
     ! Otherwise, the right node covers [threshold, upper]
-    if (bounds(2) >= pos_inf) then
+    if (b_upper >= pos_inf) then
       p(idx, 2) = 1.0_dp - p_temp
     else
-      p(idx, 2) = pdist(argsd, n_idx, bounds(2), x_f(idx), sigma_f) - p_temp
+      p(idx, 2) = pdist(argsd, n_idx, b_upper, x_f(idx), sigma_f) - p_temp
     end if
 
     ! Standardize the probabilities so that they sum to P(Parent)
-    p_temp = prob(idx) / sum(p(idx, :), dim=2)
-    p(idx, 1) = p(idx, 1) * p_temp
-    p(idx, 2) = p(idx, 2) * p_temp
+    do i = 1, n_idx
+      p_sum = p(idx(i), 1) + p(idx(i), 2)
+      if (p_sum > eps) then
+        p_temp(i) = prob(idx(i)) / p_sum
+        p(idx(i), 1) = p(idx(i), 1) * p_temp(i)
+        p(idx(i), 2) = p(idx(i), 2) * p_temp(i)
+      else
+        ! Fallback: assign deterministically based on threshold
+        if (x_f(idx(i)) <= threshold) then
+          p(idx(i), 1) = prob(idx(i))
+          p(idx(i), 2) = 0.0_dp
+        else
+          p(idx(i), 1) = 0.0_dp
+          p(idx(i), 2) = prob(idx(i))
+        end if
+      end if
+    end do
   end subroutine update_prob_no_na
 
-  pure subroutine update_prob_na_fill0(argsd, idx_p, n_obs, x_f, threshold, bounds, sigma_f, prob, p)
-    !----------------------------
-    ! Helper: fill = 0
-    ! Added July/2025
-    !----------------------------
-    implicit none
-    type(argsdist), intent(in) :: argsd
-    type(idx_prob), intent(in) :: idx_p
-    integer, intent(in) :: n_obs
-    real(dp), intent(in) :: x_f(n_obs), sigma_f, threshold
-    real(dp), intent(in) :: bounds(2), prob(n_obs)
-    real(dp), intent(inout) :: p(n_obs, 2)
-
-    if (idx_p%n_miss(1) > 0) then
-      p(idx_p%idx_any_na, 1) = prob(idx_p%idx_any_na) / 2.0_dp
-      p(idx_p%idx_any_na, 2) = prob(idx_p%idx_any_na) / 2.0_dp
-      if (idx_p%n_miss(1) == idx_p%n_prob) return
-    end if
-
-    ! Compute the probability for complete cases
-    call update_prob_no_na(argsd, size(idx_p%idx), idx_p%idx, n_obs, x_f, threshold, bounds, sigma_f, prob, p)
-  end subroutine update_prob_na_fill0
-
-  pure subroutine update_prob_na_fill1(argsd, idx_p, n_obs, x_f, threshold, bounds, sigma_f, prob, p)
-    !----------------------------
-    ! Helper: fill = 1
-    ! Added July/2025
-    !----------------------------
-    implicit none
-    type(argsdist), intent(in) :: argsd
-    type(idx_prob), intent(in) :: idx_p
-    integer, intent(in) :: n_obs
-    real(dp), intent(in) :: x_f(n_obs), sigma_f, threshold
-    real(dp), intent(in) :: bounds(2), prob(n_obs)
-    real(dp), intent(inout) :: p(n_obs, 2)
-    integer :: i, n_na
-
-    ! CASE 1: Missing values for X_f
-    if (idx_p%n_miss(2) > 0) then
-      p(idx_p%idx_na_f, 1) = prob(idx_p%idx_na_f) / 2.0_dp
-      p(idx_p%idx_na_f, 2) = prob(idx_p%idx_na_f) / 2.0_dp
-      if (idx_p%n_miss(2) == idx_p%n_prob) return
-    end if
-
-    ! CASE 2: X_f observed but missing values in X
-    if (idx_p%n_miss(2) < idx_p%n_miss(1)) then
-      n_na = idx_p%n_miss(1) - idx_p%n_miss(2)
-      do i = 1, n_na
-        if (x_f(idx_p%idx_any_na(i)) > threshold) then
-          ! probability in the right node
-          p(idx_p%idx_any_na(i), 1) = 0.0_dp
-          p(idx_p%idx_any_na(i), 2) = prob(idx_p%idx_any_na(i))
-        else
-          ! probability in the right node
-          p(idx_p%idx_any_na(i), 1) = prob(idx_p%idx_any_na(i))
-          p(idx_p%idx_any_na(i), 2) = 0.0_dp
-        end if
-      end do
-      if (idx_p%n_miss(1) == idx_p%n_prob) return
-    end if
-
-    ! Compute the probability for complete cases
-    call update_prob_no_na(argsd, size(idx_p%idx), idx_p%idx, n_obs, x_f, threshold, bounds, sigma_f, prob, p)
-  end subroutine update_prob_na_fill1
-
-  pure subroutine update_prob_na_fill2(argsd, idx_p, n_obs, x_f, threshold, bounds, sigma_f, prob, p)
-    !----------------------------
-    ! Helper: fill = 2
-    ! Added July/2025
-    !----------------------------
-    implicit none
-    type(argsdist), intent(in) :: argsd
-    type(idx_prob), intent(in) :: idx_p
-    integer, intent(in) :: n_obs
-    real(dp), intent(in) :: x_f(n_obs), sigma_f, threshold
-    real(dp), intent(in) :: bounds(2), prob(n_obs)
-    real(dp), intent(inout) :: p(n_obs, 2)
-
-    ! Compute the indexes for missing values using na_f
-    if (idx_p%n_miss(2) > 0) then
-      p(idx_p%idx_na_f, 1) = prob(idx_p%idx_na_f) / 2.0_dp
-      p(idx_p%idx_na_f, 2) = prob(idx_p%idx_na_f) / 2.0_dp
-      if (idx_p%n_miss(2) == idx_p%n_prob) return
-    end if
-    ! Compute the probability for complete cases
-    call update_prob_no_na(argsd, size(idx_p%idx), idx_p%idx, n_obs, x_f, threshold, bounds, sigma_f, prob, p)
-  end subroutine update_prob_na_fill2
-
-  pure subroutine update_prob(argsd, idx_p, n_obs, x_f, threshold, bounds, sigma_f, fill, prob, p)
+  subroutine update_prob(argsd, idx_p, x_f, threshold, b_lower, b_upper, sigma_f, fill, prob, p)
     !---------------------------------------------------------------------------------------
     ! Computes the probability for the left and right node given a feature and a threshold.
-    ! Calls the specific function based on fill type.
     ! WARNING: This subroutine implicitly assumes that for idx, all prob > eps.
     !
     ! ARGUMENTS
     !   argsd    [in] : argsDist, distribution related parameters.
     !   idx_p    [in] : type(idx_prob), information on missing values.
-    !   n_obs    [in] : Integer, number of observations.
-    !   x_f      [in] : Real(dp), the value for the splitting feature.
+    !   x_f      [in] : Real, the value for the splitting feature.
     !   na_f     [in] : Logical, missing mask for the current feature.
-    !   bounds   [in] : Real(dp), lower and upper bounds for the splitting feature.
-    !   sigma_f  [in] : Real(dp), sigma for splitting feature.
+    !   bounds   [in] : Real, lower and upper bounds for the splitting feature.
+    !   sigma_f  [in] : Real, sigma for splitting feature.
     !   fill     [in] : Integer, fill strategy for missing values.
     !   n_miss   [in] : Integer, number of rows with missing values and P > eps
     !                   (global and for feature f)
@@ -1086,42 +1253,147 @@ contains
     implicit none
     type(argsdist), intent(in) :: argsd
     type(idx_prob), intent(in) :: idx_p
-    integer, intent(in) :: n_obs, fill
-    real(dp), intent(in) :: x_f(n_obs), sigma_f, threshold
-    real(dp), intent(in) :: bounds(2)
-    real(dp), intent(in) :: prob(n_obs)
-    real(dp), intent(inout) :: p(n_obs, 2)
+    integer, intent(in) :: fill
+    real(dp), intent(in) :: x_f(:), sigma_f, threshold
+    real(dp), intent(in) :: b_lower, b_upper
+    real(dp), intent(in) :: prob(:)
+    real(dp), intent(inout) :: p(:, :)
+    integer :: i, n_na
 
     select case (fill)
     case (0)
       ! fill = 0: Assing uniform probability for both nodes if any observation in Xi is missing
-      call update_prob_na_fill0(argsd, idx_p, n_obs, x_f, threshold, bounds, sigma_f, prob, p)
+      if (idx_p%n_miss_any > 0) then
+        p(idx_p%idx_any_na, 1) = prob(idx_p%idx_any_na) * 0.5_dp
+        p(idx_p%idx_any_na, 2) = prob(idx_p%idx_any_na) * 0.5_dp
+        if (idx_p%n_miss_any == idx_p%n_prob) return
+      end if
     case (1)
       ! fill = 1: Assigns uniform probability for both nodes if x_f is missing
       !           Assign 0/1 weights when X_f is not missing
-      call update_prob_na_fill1(argsd, idx_p, n_obs, x_f, threshold, bounds, sigma_f, prob, p)
+      ! CASE 1: Missing values for X_f
+      if (idx_p%n_miss_f > 0) then
+        p(idx_p%idx_na_f, 1) = prob(idx_p%idx_na_f) * 0.5_dp
+        p(idx_p%idx_na_f, 2) = prob(idx_p%idx_na_f) * 0.5_dp
+        if (idx_p%n_miss_f == idx_p%n_prob) return
+      end if
+      ! CASE 2: X_f observed but missing values in X
+      if (idx_p%n_miss_f < idx_p%n_miss_any) then
+        n_na = idx_p%n_miss_any - idx_p%n_miss_f
+        do i = 1, n_na
+          if (x_f(idx_p%idx_any_na(i)) > threshold) then
+            ! probability in the right node
+            p(idx_p%idx_any_na(i), 1) = 0.0_dp
+            p(idx_p%idx_any_na(i), 2) = prob(idx_p%idx_any_na(i))
+          else
+            ! probability in the right node
+            p(idx_p%idx_any_na(i), 1) = prob(idx_p%idx_any_na(i))
+            p(idx_p%idx_any_na(i), 2) = 0.0_dp
+          end if
+        end do
+        if (idx_p%n_miss_any == idx_p%n_prob) return
+      end if
     case (2)
       ! fill = 2: Assigns probability based weights.
-      call update_prob_na_fill2(argsd, idx_p, n_obs, x_f, threshold, bounds, sigma_f, prob, p)
+      ! Compute the indexes for missing values using na_f
+      if (idx_p%n_miss_f > 0) then
+        p(idx_p%idx_na_f, 1) = prob(idx_p%idx_na_f) * 0.5_dp
+        p(idx_p%idx_na_f, 2) = prob(idx_p%idx_na_f) * 0.5_dp
+        if (idx_p%n_miss_f == idx_p%n_prob) return
+      end if
     end select
+
+    ! Compute the probability for complete cases (also for fill = 2 and x_f not missing)
+    call update_prob_no_na(argsd, size(idx_p%idx), idx_p%idx, x_f, &
+      threshold, b_lower, b_upper, sigma_f, prob, p)
   end subroutine update_prob
 
-  pure subroutine search_from_center(state, train, ctrl, argsd, try, best, helper, bounds, idx_p, prob)
+  subroutine update_pmatrix(tree, nodeId, splitId, fa_id, p_out)
+    !---------------------------------------------------------------------------------------
+    ! Updates the probability matrix for the child nodes after a split.
+    !
+    ! ARGUMENTS
+    !   tree     [in] : tree_model, the tree structure.
+    !   nodeId   [in] : Integer, node id of the current split.
+    !   splitId  [in] : Integer, split id of the current split.
+    !   fa_id    [in] : Integer, node id of the parent node.
+    !   p_out [inout] : Real, output probability array allocated previously.
+    !
+    ! DETAILS
+    !   - Initializes the probability matrix for the child nodes.
+    !   - Determines the indexes of observations to be used for probability computation
+    !     based on the fill type and missingness of features.
+    !   - Calls the update_prob subroutine to compute the probabilities for the child nodes.
+    ! Added March/2026
+    !---------------------------------------------------------------------------------------
+    implicit none
+    type(tree_model), intent(in) :: tree
+    integer, intent(in) :: nodeId, splitId, fa_id
+    real(dp), intent(inout) :: p_out(:, :)
+
+    ! local variables
+    integer, allocatable :: idx(:)
+    logical, allocatable :: p_zero(:)
+    integer :: n_zero, n_prob, feat, j
+    type(idx_prob) :: idx_p
+    real(dp) :: thr
+    real(dp) :: b_lower, b_upper
+
+    ! initialize the probability matrix for the child nodes
+    p_out = 0.0_dp
+
+    ! mask for P <= eps
+    p_zero = (tree%p(:, fa_id) <= eps)
+    n_zero = count(p_zero)
+
+    ! where P_father <= eps
+    !   P_left_child = P_father
+    !   P_right_child = 0
+    ! idx = indexes where P_father > eps
+    if (n_zero > 0) then
+      where (p_zero) p_out(:, 1) = tree%p(:, fa_id)
+      idx = pack([(j, j=1, tree%n_train)], mask=.not. p_zero)
+    else
+      idx = [(j, j=1, tree%n_train)]
+    end if
+    n_prob = size(idx)
+
+    feat = tree%nodes(nodeid)%best(splitid)%feat
+    thr = tree%nodes(nodeid)%best(splitid)%thr
+
+    ! set the indexes in idx_p according to the fill type
+    if (tree%any_na) then
+      call get_idx_prob(idx_p, tree%na, tree%nodes(nodeid)%best(splitid)%n_imp, &
+        tree%nodes(nodeid)%best(splitid)%imp_feat, n_prob, idx, tree%fill, feat)
+    else
+      ! If there are no NA's, no need to save other indexes
+      idx_p%n_miss_f = 0
+      idx_p%n_miss_any = 0
+      idx_p%idx = idx
+    end if
+
+    call get_feature_bounds(nodeId, feat, tree%nodes_info, tree%thresholds, b_lower, b_upper)
+
+    ! update the probability for the child node
+    call update_prob(tree%dist, idx_p, tree%x_train(:, feat), thr, &
+                    b_lower, b_upper, tree%sigma(feat), tree%fill, tree%p(:, fa_id), p_out)
+  end subroutine update_pmatrix
+
+  subroutine search_from_center(tree, nodeid, try, best, helper, b_lower, b_upper, idx_p, prob)
     !---------------------------------------------------------------------------------
     ! Perform the search for the best split from the middle to the end of the vector.
     ! The direction of the search depends on the 'direc' argument.
     !
     ! ARGUMENTS
-    !   state   [inout] :: node_state, node state to update.
-    !   train   [in]    :: tree_data, input data.
-    !   ctrl    [in]    :: tree_ctrl, control parameters.
-    !   argsd   [in]    :: argsdist, distribution related parameters
+    !   tree    [in]    :: tree_model, tree model.
+    !   nodeid  [in]    :: Integer, node id of the current split.
     !   try     [inout] :: info_split, information for the split candidate
     !   best    [inout] :: info_split, information on the best splits
     !   helper  [inout] :: h_data, helper variables.
-    !   bounds  [in]    :: Real(dp), bounds for current feature
+    !   b_lower [in]    :: Real, lower bound for current feature
+    !   b_upper [in]    :: Real, upper bound for current feature
     !   idx_p   [in]    :: idx_prob, information on missing values
-    !   prob    [in]    :: Real(dp), vector of probabilites for the father node
+    !   prob    [in]    :: Real, vector of probabilites for the father node
     !
     ! DETAILS
     !  - Loop over all threholds and compute sum_left and sum_right using Xf and y_cs
@@ -1132,37 +1404,41 @@ contains
     !    lead to probabilities too low.
     !
     ! Added July/2025
+    ! Last update: May/2026
+    !  - replaced several arguments with the tree object to simplify the argument list.
     !--------------------------------------------------------------------------------
     implicit none
-    type(node_state), intent(inout) :: state
-    type(tree_data), intent(in) :: train
-    type(tree_ctrl), intent(in) :: ctrl
-    type(argsdist), intent(in) :: argsd
+    type(tree_model), intent(inout) :: tree
+    integer, intent(in) :: nodeid
     type(info_split), intent(inout) :: try
-    type(info_split), intent(inout) :: best(ctrl%n_cand)
+    type(info_split), intent(inout) :: best(:)
     type(h_data), intent(inout) :: helper
     type(idx_prob), intent(in) :: idx_p
-    real(dp), intent(in) :: bounds(2)
-    real(dp), intent(in) :: prob(train%n_obs)
+    real(dp), intent(in) :: b_lower, b_upper
+    real(dp), intent(in) :: prob(:)
     integer :: i, ii
     logical :: fail
-    real(dp) :: y_sum(2), perc_comp(2)
+    real(dp) :: y_sum(2), perc_comp(2), multi
+    real(dp), allocatable :: p(:, :)
 
+    multi = 1.0_dp / real(tree%n_train, dp)
+    allocate(p(tree%n_train, 2))
     i = helper%n_start
     ! stop if gets to any end of the vector
     loop: do
       ! increment i based on the search direction (left or right)
       i = i + helper%direction
-      if (i < 1 .or. i > state%thresholds(try%feat)%nt) return
+      if (i < 1 .or. i > tree%nodes(nodeid)%thresholds(try%feat)%nt) return
 
       ! save the current threshold
-      try%thr = state%thresholds(try%feat)%thr(i)
+      try%thr = tree%nodes(nodeid)%thresholds(try%feat)%thr(i)
 
       ! Find the index ii such that x(ii) > threshold
       ! ii > i, always. The equality ii = i + 1 only holds if x contains only
       ! unique values that are not close to each other.
       ii = i
-      do while (helper%x(ii + 1) < try%thr)
+      do while (ii < helper%n_comp)
+        if (helper%x(ii + 1) >= try%thr) exit
         ii = ii + 1
       end do
 
@@ -1175,12 +1451,13 @@ contains
       ! Check if the node can be splitted using min_prob (complete analysis)
       !  - compute the probability for the left and right nodes
       !  - compute the proportion of probabilities higher than a threshold
-      call update_prob(argsd, idx_p, train%n_obs, train%x(:, try%feat), try%thr, &
-                       bounds, train%sigma(try%feat), train%fill, prob, try%p)
-      perc_comp = count(try%p > ctrl%min_prob, dim=1) / real(train%n_obs, dp)
+      p = 0.0_dp
+      call update_prob(tree%dist, idx_p, tree%x_train(:, try%feat), try%thr, &
+                       b_lower, b_upper, tree%sigma(try%feat), tree%fill, prob, p)
+      perc_comp = count(p > tree%min_prob, dim=1) * multi
 
       ! When the first split fails (min_obs or perc_comp), any split from here will also fail
-      if (.not. minval(perc_comp) > ctrl%min_prop) return
+      if (.not. minval(perc_comp) > tree%min_prop) return
 
       ! If a split can be made, save the regions for the new nodes
       try%regid(helper%idx_c(1:ii)) = left_id                  ! left node
@@ -1189,36 +1466,31 @@ contains
       ! STEP2: update left and right sum using missing indexes
       ! Assign Xmiss to some reg using a proxy
       if (helper%n_miss_f > 0) then
-        call assign_missing(try, helper%n_miss_f, train%y(state%idx(helper%idx_m)), y_sum, helper%idx_m, ctrl%crit)
+        call assign_missing(try, helper%n_miss_f, helper%y_m, y_sum, helper%idx_m, tree%crit)
       end if
 
       ! compute the proxy score and update the best list
       try%score = y_sum(1)**2 / try%n_l + y_sum(2)**2 / try%n_r
 
-      if (state%n_cand_found < ctrl%n_cand) then
-        best(state%n_cand_found + 1) = try
-        state%n_cand_found = state%n_cand_found + 1
+      if (tree%nodes(nodeid)%n_cand_found < tree%n_cand) then
+        best(tree%nodes(nodeid)%n_cand_found + 1) = try
+       tree%nodes(nodeid)%n_cand_found = tree%nodes(nodeid)%n_cand_found + 1
         cycle
       end if
 
-      call update_best_list(ctrl%n_cand, best, try, fail)
-      if (.not. fail) state%n_cand_found = state%n_cand_found + 1
+      call update_best_list(tree%n_cand, best, try, fail)
+      if (.not. fail) tree%nodes(nodeid)%n_cand_found = tree%nodes(nodeid)%n_cand_found + 1
     end do loop
   end subroutine search_from_center
 
-  subroutine find_node_splits(state, train, ctrl, bounds, prob, n_zero, p_zero, argsd)
+  subroutine find_node_splits(tree, nodeid, prob)
     !---------------------------------------------------------------------------------------------
     ! Finds the best candidate splits for a node based on a proxy improvement measure.
     !
     ! ARGUMENTS
-    !   state  [inout] : node_state, node state to update.
-    !   train  [in]    : tree_data, input data.
-    !   ctrl   [in]    : tree_ctrl, control parameters.
-    !   bounds [in]    : Real(dp), bounds for current region
-    !   prob   [in]    : Real(dp), vector of probabilites for the candidate node
-    !   n_zero [in]    : Integer, number of prob <= eps
-    !   p_zero [in]    : Logical, mask for prob <= eps
-    !   argsd  [in]    : argsdist, distribution related parameters
+    !   tree   [inout] : tree_model, tree model.
+    !   nodeid [in]    : Integer, node id of the current split.
+    !   prob   [in]    : Real, vector of probabilites for the candidate node
     !
     ! DETAILS
     !  - Initializes P for the two new nodes and identify the indexes where P(father) <= eps.
@@ -1229,80 +1501,90 @@ contains
     !       to find the best n_cand candidates
     !
     ! Added July/2025
+    ! Last update: May/2026
+    !  - removed state and added nodeid
     !---------------------------------------------------------------------------------------------
     implicit none
-    type(node_state), intent(inout) :: state
-    type(tree_data), intent(in) :: train
-    type(tree_ctrl), intent(in) :: ctrl
-    real(dp), intent(in) :: bounds(train%n_feat, 2)
-    real(dp), intent(in) :: prob(train%n_obs)
-    integer, intent(in) :: n_zero
-    logical, intent(in) :: p_zero(train%n_obs)
-    type(argsdist), intent(in) :: argsd
+    type(tree_model), intent(inout) :: tree
+    integer, intent(in) :: nodeid
+    real(dp), intent(in) :: prob(:)
+
     ! Local Variables
+    integer :: n_zero
+    logical, allocatable :: p_zero(:)
     integer :: j, f, n_obs_node, n_prob
-    integer :: idx_node(state%n_obs)
+    integer :: c_c, c_m
+    integer, allocatable :: idx_node(:)
     integer, allocatable :: n_miss(:), idx(:)
     type(info_split), allocatable :: best(:)
     type(info_split) :: try
-    logical, allocatable :: not_na_f(:)
-    logical :: update_f
     type(h_data) :: helper
-    type(idx_prob) :: idx_p, null_idx_p
+    type(idx_prob) :: idx_p
+    real(dp) :: b_lower, b_upper
 
     ! Number of observations and their indices in the current node
     ! Each child node will have more than min_obs observations (previously computed)
-    n_obs_node = state%n_obs
-    idx_node = state%idx  ! global indexes
-    allocate (n_miss(train%n_feat))  ! to avoid error when compiling for mac
-    n_miss = count(train%na(idx_node, :), dim=1) ! number of missing cases in the node
+    n_obs_node = tree%nodes(nodeid)%n_obs_node
+    idx_node = tree%nodes(nodeid)%idx  ! global indexes
+    allocate (n_miss(tree%n_feat))
+    n_miss = count(tree%na(idx_node, :), dim=1) ! number of missing cases in the node
 
     ! Initialize candidate search for the current node
-    best = vector(ctrl%n_cand, try)
-    state%n_cand_found = 0
+    tree%nodes(nodeid)%n_cand_found = 0
+    allocate(best(tree%n_cand))
     best%score = 0.0_dp
-    try%regid = vector(n_obs_node, 0)
-    try%p = matrix(train%n_obs, 2, 0.0_dp)
+    allocate(try%regid(n_obs_node), source = 0)
+    allocate(try%imp_feat(tree%n_feat))
 
     ! To preserve probability, if the father's node is near zero,
     ! all the probability is kept in the left node.
+    allocate(p_zero(tree%n_train))
+    p_zero = prob <= eps
+    n_zero = count(p_zero)
     if (n_zero > 0) then
-      where (p_zero)
-        try%p(:, 1) = prob
-        try%p(:, 2) = 0.0_dp
-      end where
       ! Global: pack non zero indexes (need update to identify NA entries)
-      idx = pack([(j, j=1, train%n_obs)], mask=.not. p_zero)
+      idx = pack([(j, j=1, tree%n_train)], mask=.not. p_zero)
     else
       ! Global: Non zero indexes (need update to identify NA entries)
-      idx = [(j, j=1, train%n_obs)]
+      idx = [(j, j=1, tree%n_train)]
     end if
     n_prob = size(idx)
 
+    ! Pre-allocate matrices to their maximum capacity only ONCE
+    ! This avoids expensive OS heap allocation calls during the feature loop
+    allocate(helper%idx_c(n_obs_node))
+    allocate(helper%x(n_obs_node))
+    allocate(helper%y_cs(n_obs_node))
+    allocate(helper%idx_m(n_obs_node))
+    allocate(helper%y_m(n_obs_node))
+
     ! Loop over all features to find best splits
-    do f = 1, train%n_feat
+    do f = 1, tree%n_feat
 
       ! Skip feature if it has no valid thresholds (pre-calculated)
       ! if nt > 0, then n_obs > min_obs for each child node (pre-calculated)
-      if (state%thresholds(f)%nt == 0) cycle
+      if (tree%nodes(nodeid)%thresholds(f)%nt == 0) cycle
 
       ! Pre-process complete cases:
-      ! Step 1: filter de data using the global indexes
-      !         Here we need all complete cases, not only P > eps.
-      not_na_f = .not. train%na(idx_node, f)
-      helper%n_comp = count(not_na_f)  ! always > 0
-      helper%idx_c = pack(idx_node, mask=not_na_f)
-      helper%x = train%x(helper%idx_c, f)
-      helper%y_cs = train%y(helper%idx_c)
       helper%n_miss_f = n_miss(f)
-      if (helper%n_miss_f > 0) then
-        ! position of missing values inside the node block
-        ! will be used to assing a region to the missing values
-        helper%idx_m = pack([(j, j=1, state%n_obs)], mask=train%na(state%idx, f))
-      end if
+      helper%n_comp = n_obs_node - helper%n_miss_f
 
-      ! Step 2: save the local indexes, sort and create the cumulative sum
-      helper%idx_c = pack([(j, j=1, n_obs_node)], mask=not_na_f)
+      ! Unified single-pass loop replaces three packs, array constructors and slicing evaluations
+      c_c = 1
+      c_m = 1
+      do j = 1, n_obs_node
+        if (.not. tree%na(idx_node(j), f)) then
+          helper%idx_c(c_c) = j ! Save local index
+          helper%x(c_c) = tree%x_train(idx_node(j), f)
+          helper%y_cs(c_c) = tree%y_train(idx_node(j))
+          c_c = c_c + 1
+        else
+          helper%idx_m(c_m) = j ! Save local index
+          helper%y_m(c_m) = tree%y_train(idx_node(j))
+          c_m = c_m + 1
+        end if
+      end do
+
       call sort_xy(helper%n_comp, helper%x, helper%y_cs, helper%idx_c)
       do j = 2, helper%n_comp
         helper%y_cs(j) = helper%y_cs(j - 1) + helper%y_cs(j)
@@ -1310,64 +1592,60 @@ contains
 
       ! Set current feature for the candidate split
       try%feat = f
-      try%n_imp = state%n_imp
-      try%imp_feat = state%imp_feat
+      try%n_imp = tree%nodes(nodeid)%n_imp
+      try%imp_feat = tree%nodes(nodeid)%imp_feat
 
       ! Select only the important features to update P
       ! Only needs update if f was not an important feature
-      if (all(state%imp_feat /= f)) then
+      if (try%n_imp == 0 .or. all(try%imp_feat(1:try%n_imp) /= f)) then
         call update_imp_features(try%feat, try%n_imp, try%imp_feat)
-        ! NA mask now must also include the possibility of f be missing)
-        update_f = (train%n_miss(f) > 0)
-      else
-        update_f = .false.
       end if
 
       ! Initialize idx_p to a null state to prevent uninitialized use
-      idx_p = null_idx_p
 
-      ! Copy the mask from the parent node (previously updated to reflect NA and P > eps)
-      if (train%any_na) then
-        try%na_info = state%na_info
-        ! set the indexes in idx_p according to the fill type
-        call get_idx_prob(idx_p, train%n_obs, size(try%na_info, 2), try%na_info, n_prob, idx, train%fill, f, update_f)
+      ! set the indexes in idx_p according to the fill type
+      if (tree%any_na) then
+        call get_idx_prob(idx_p, tree%na, try%n_imp, try%imp_feat, n_prob, idx, tree%fill, f)
       else
         ! If there are no NA's, no need to save other indexes
-        idx_p%n_miss = 0
+        idx_p%n_miss_f = 0
+        idx_p%n_miss_any = 0
         idx_p%idx = idx
       end if
+
+      call get_feature_bounds(nodeid, f, tree%nodes_info, tree%thresholds, b_lower, b_upper)
 
       ! Loop in thresholds: starts from the center and goes to the ends (left first)
       ! Stop going in the current direction if a split leads to a region with probability too small
 
-      if (state%thresholds(f)%nt > 1) then  ! More likely
+      if (tree%nodes(nodeid)%thresholds(f)%nt > 1) then  ! More likely
         ! go left (nt/2 to 1)
-        helper%n_start = state%thresholds(f)%nt / 2 + 1
+        helper%n_start = tree%nodes(nodeid)%thresholds(f)%nt / 2 + 1
         helper%direction = -1
-        call search_from_center(state, train, ctrl, argsd, try, best, helper, bounds(f, :), idx_p, prob)
+        call search_from_center(tree, nodeid, try, best, helper, b_lower, b_upper, idx_p, prob)
         ! go right (nt/2 + 1 to nt)
-        helper%n_start = state%thresholds(f)%nt / 2
+        helper%n_start = tree%nodes(nodeid)%thresholds(f)%nt / 2
         helper%direction = 1
-        call search_from_center(state, train, ctrl, argsd, try, best, helper, bounds(f, :), idx_p, prob)
+        call search_from_center(tree, nodeid, try, best, helper, b_lower, b_upper, idx_p, prob)
       else
         ! go right (only 1 to test)
         helper%n_start = 0
         helper%direction = 1
-        call search_from_center(state, train, ctrl, argsd, try, best, helper, bounds(f, :), idx_p, prob)
+        call search_from_center(tree, nodeid, try, best, helper, b_lower, b_upper, idx_p, prob)
       end if
     end do  ! end of loop in features
 
     ! check if any split can be attempted.
     ! - if n_cand_found == 0, then no split is possible and the node becomes terminal
-    if (state%n_cand_found == 0) return
+    if (tree%nodes(nodeid)%n_cand_found == 0) return
 
     ! set the best candidates and update the node updating status
-    state%n_cand_found = min(state%n_cand_found, ctrl%n_cand)
-    state%best = best(1:state%n_cand_found)
-    state%update = .false.
+    tree%nodes(nodeid)%n_cand_found = min(tree%nodes(nodeid)%n_cand_found, tree%n_cand)
+    tree%nodes(nodeid)%best = best(1:tree%nodes(nodeid)%n_cand_found)
+    tree%nodes(nodeid)%update = .false.
   end subroutine find_node_splits
 
-  subroutine update_mse(tree, nodeid, splitid, p, gammahat, yhat, mse)
+  subroutine update_mse(tree, nodeid, splitid, gammahat, yhat, mse, p_work)
     !-------------------------------------------------------------------------------------------------
     ! Efficiently updates the coefficients gammahat, the predictions yhat, and the proxy mean
     ! squared error (proxy_mse) for a given split in the tree structure.
@@ -1376,142 +1654,49 @@ contains
     !   tree     [in]    : tree_model, current tree structure.
     !   nodeid   [in]    : Integer, index of the node to split.
     !   splitid  [in]    : Integer, index of the split to apply.
-    !   p        [inout] : Real(dp), workspace for the probability matrix (n_obs x (n_tn + 1)).
-    !   gammahat [out]   : Real(dp), the updated coefficients.
-    !   yhat     [out]   : Real(dp), the updated predictions.
-    !   mse      [out]   : Real(dp), the updated proxy mse.
+    !   gammahat [out]   : Real, the updated coefficients.
+    !   yhat     [out]   : Real, the updated predictions.
+    !   mse      [out]   : Real, the updated proxy mse.
+    !   p_work   [inout] : Real, working array pre-allocated to avoid overhead.
     !
     ! Added: July/2025
     !-------------------------------------------------------------------------------------------------
     implicit none
-    type(tree_model), intent(in) :: tree
+    type(tree_model), intent(inout) :: tree
     integer, intent(in) :: nodeid, splitid
-    real(dp), intent(inout) :: p(tree%train%n_obs, tree%net%n_tn + 1)
     real(dp), allocatable, intent(out) :: gammahat(:)
-    real(dp), intent(out) :: yhat(tree%train%n_obs)
+    real(dp), intent(out) :: yhat(:)
     real(dp), intent(out) :: mse
-    integer :: pos
+    real(dp), intent(out) :: p_work(:, :)
+    integer :: fa_id
 
     ! Finds which column of P corresponds to the node being split
-    if (tree%net%n_tn > 1) then
-      pos = findloc(tree%net%tn_id == nodeid, value=.true., dim=1)
+    if (tree%n_tn > 1) then
+      fa_id = findloc(tree%tn_id(1:tree%n_tn) == nodeid, value=.true., dim=1)
     else
-      pos = 1
+      fa_id = 1
     end if
 
-    ! Fill P with old values, except the ones from current region (jth = pos)
+    ! Fill P with old values, except the ones from current region (jth = fa_id)
     !  - Previous P has n_tn columns.
     !    The columns are indexed by terminal nodes in increasing order
     !  - In the new P, the first n_tn - 1 columns correspond to the old terminal nodes
     !    (which remain the same) and the last two columns correspond to the new regions.
     !    After the jth column, the columns will be shifted one position to the left.
     !  - If P has only one column, there are no columns to shift.
-    if (tree%net%n_tn > 1) then
-      p(:, 1:pos - 1) = tree%net%p(:, 1:pos - 1)
-      p(:, pos:tree%net%n_tn - 1) = tree%net%p(:, pos + 1:tree%net%n_tn)
+    if (tree%n_tn > 1) then
+      if (fa_id > 1) p_work(:, 1:fa_id - 1) = tree%p(:, 1:fa_id - 1)
+      if (fa_id < tree%n_tn) p_work(:, fa_id:tree%n_tn - 1) = tree%p(:, fa_id + 1:tree%n_tn)
     end if
-    p(:, tree%net%n_tn:tree%net%n_tn + 1) = tree%net%nodes(nodeid)%state%best(splitid)%p
+    call update_pmatrix(tree, nodeid, splitid, fa_id, p_work(:, tree%n_tn:tree%n_tn + 1))
 
     ! Update gammahat and the proxy mse value
-    gammahat = lsquare(tree%train%n_obs, tree%net%n_tn + 1, p, tree%train%y)
-    yhat = matmul(p, gammahat)
-    mse = sum((tree%train%y - yhat)**2)
+    gammahat = lsquare(tree, p_work)
+    yhat = matmul(p_work, gammahat)
+    mse = sum((tree%y_train - yhat)**2)
   end subroutine update_mse
 
-  pure function expand_nodes(n, source) result(f)
-    !----------------------------------------------------------------------------
-    ! Creates a tree_node vector of length n + 2 filled with node at the first
-    ! positions and unitialized at the end.
-    !
-    ! ARGUMENTS
-    !   n      [in] : Integer, length of the vector.
-    !   source [in] : Type(tree_node), value to fill the vector.
-    !
-    !
-    ! Added July/2025
-    !----------------------------------------------------------------------------
-    implicit none
-    integer, intent(in) :: n
-    type(tree_node), intent(in) :: source(n)
-    type(tree_node) :: f(n + 2)
-    f(1:n) = source
-  end function expand_nodes
-
-  pure function expand_tn(n, j, source1, source2) result(f)
-    !---------------------------------------------------------------------------
-    ! Creates an integer vector of length n + 1 filled with source1, except the
-    ! jth position and source2 at the end.
-    !
-    ! ARGUMENTS
-    !   n       [in] : Integer, length of the vector.
-    !   j       [in] : Integer, the position to be replaced
-    !   source1 [in] : Integer, values to fill the vector.
-    !   source2 [in] : Integer, values to fill the vector.
-    !
-    ! Added July/2025
-    !---------------------------------------------------------------------------
-    implicit none
-    integer, intent(in) :: n, j
-    integer, intent(in) :: source1(n), source2(2)
-    integer :: f(n + 1)
-    ! Reconstruct the array by taking slices before and after the j-th element,
-    ! and then appending the new elements from source2.
-    f(1:j - 1) = source1(1:j - 1)
-    f(j:n - 1) = source1(j + 1:n)
-    f(n:n + 1) = source2
-  end function expand_tn
-
-  pure function expand_p(m, n, j, source1, source2) result(f)
-    !----------------------------------------------------------------------------
-    ! Creates a real(dp) matrix of size m x n filled with source1, except the
-    ! jth position and source2 at the end.
-    !
-    ! ARGUMENTS
-    !   m       [in] : Integer, number of rows.
-    !   n       [in] : Integer, number of columns.
-    !   source1 [in] : Real(dp), value to fill the matrix.
-    !   source2 [in] : Real(dp), value to fill the matrix.
-    !
-    ! Added July/2025
-    !----------------------------------------------------------------------------
-    implicit none
-    integer, intent(in) :: m, n, j
-    real(dp), intent(in) :: source1(m, n)
-    real(dp), intent(in) :: source2(m, 2)
-    real(dp) :: f(m, n + 1)
-    ! Reconstruct the matrix by taking slices before and after the j-th column,
-    ! and then appending the new columns from source2.
-    f(:, 1:j - 1) = source1(:, 1:j - 1)
-    f(:, j:n - 1) = source1(:, j + 1:n)
-    f(:, n:n + 1) = source2
-  end function expand_p
-
-  pure function expand_pz(m, n, j, source1, source2) result(f)
-    !----------------------------------------------------------------------------
-    ! Creates a logical matrix of size m x n filled with source1, except the
-    ! jth position and the masks for source2 at the end.
-    !
-    ! ARGUMENTS
-    !   m       [in] : Integer, number of rows.
-    !   n       [in] : Integer, number of columns.
-    !   source1 [in] : Logical, value to fill the matrix.
-    !   source2 [in] : real(dp), value to fill the matrix.
-    !
-    ! Added July/2025
-    !----------------------------------------------------------------------------
-    implicit none
-    integer, intent(in) :: m, n, j
-    logical, intent(in) :: source1(m, n)
-    real(dp), intent(in) :: source2(m, 2)
-    logical :: f(m, n + 1)
-    ! Reconstruct the matrix by taking slices before and after the j-th column,
-    ! and then appending the new columns from source2.
-    f(:, 1:j - 1) = source1(:, 1:j - 1)
-    f(:, j:n - 1) = source1(:, j + 1:n)
-    f(:, n:n + 1) = source2 <= eps
-  end function expand_pz
-
-  pure subroutine update_best_tree_net(tree, split_id)
+  subroutine update_best_tree_net(tree, split_id)
     !-----------------------------------------------------------------------------------
     ! Updates the tree structure with the best split information.
     !
@@ -1525,80 +1710,76 @@ contains
     type(tree_model), intent(inout) :: tree
     integer, intent(in) :: split_id(2)
     integer :: nodeid, splitid
-    integer :: newnode(2), n_nodes, n_tn, feat, j
+    integer :: newnode(2), n_nodes, n_tn, feat, fa_id
     real(dp) :: thr
     type(info_split) :: best(1)
-    type(node_state) :: null_state
+    real(dp), allocatable :: new_p(:, :)
 
     nodeid = split_id(1)
     splitid = split_id(2)
-    n_nodes = tree%net%n_nodes
-    n_tn = tree%net%n_tn
-    feat = tree%net%nodes(nodeid)%state%best(splitid)%feat
-    thr = tree%net%nodes(nodeid)%state%best(splitid)%thr
+    n_nodes = tree%n_nodes
+    n_tn = tree%n_tn
+    feat = tree%nodes(nodeid)%best(splitid)%feat
+    thr = tree%nodes(nodeid)%best(splitid)%thr
 
     ! Update P, P_zero, n_zero, gamma, yhat and tn_id before expanding the net
+    ! Find the position of the father node in tn_id
     if (n_tn > 1) then
-      j = findloc(tree%net%tn_id == nodeid, value=.true., dim=1)
-      tree%net%tn_id = expand_tn(n_tn, j, tree%net%tn_id, [n_nodes + 1, n_nodes + 2])
-      tree%net%p = expand_p(tree%train%n_obs, tree%net%n_tn, j, tree%net%p, &
-                            tree%net%nodes(nodeid)%state%best(splitid)%p)
-      tree%net%p_zero = expand_pz(tree%train%n_obs, tree%net%n_tn, j, tree%net%p_zero, &
-                                  tree%net%nodes(nodeid)%state%best(splitid)%p)
-      tree%net%n_zero = expand_tn(n_tn, j, tree%net%n_zero, count(tree%net%p_zero(:, n_tn:n_tn + 1), dim=1))
+      fa_id = findloc(tree%tn_id(1:n_tn) == nodeid, value=.true., dim=1)
     else
-      tree%net%tn_id = [2, 3]
-      tree%net%p = tree%net%nodes(nodeid)%state%best(splitid)%p
-      tree%net%p_zero = tree%net%nodes(nodeid)%state%best(splitid)%p <= eps
-      tree%net%n_zero = count(tree%net%p_zero, dim=1)
+      fa_id = 1
     end if
 
-    ! expand the net by adding two new nodes
-    tree%net%nodes = expand_nodes(n_nodes, tree%net%nodes)
-    tree%net%n_nodes = n_nodes + 2
-    tree%net%n_tn = n_tn + 1
+    ! 1. Calculate new probabilities safely into new_p to avoid aliasing with tree%p
+    allocate(new_p(tree%n_train, 2))
+    call update_pmatrix(tree, nodeid, splitid, fa_id, new_p)
+
+    if (n_tn > 1) then
+      if (fa_id < n_tn) then
+         tree%tn_id(fa_id:n_tn - 1) = tree%tn_id(fa_id + 1:n_tn)
+         tree%p(:, fa_id:n_tn - 1) = tree%p(:, fa_id + 1:n_tn)
+      end if
+      tree%tn_id(n_tn:n_tn + 1) = [n_nodes + 1, n_nodes + 2]
+      tree%p(:, n_tn:n_tn + 1) = new_p
+    else
+      tree%tn_id(1:2) = [2, 3]
+      tree%p(:, 1:2) = new_p
+    end if
+
+    tree%n_nodes = n_nodes + 2
+    tree%n_tn = n_tn + 1
 
     ! Update the old node information
-    tree%net%nodes(nodeid)%isterminal = 0
-    tree%net%nodes(nodeid)%feature = feat
-    tree%net%nodes(nodeid)%threshold = thr
-    tree%net%nodes(nodeid)%split = .false.
+    tree%nodes_info(nodeid, idx_ni_terminal) = 0
+    tree%nodes_info(nodeid, idx_ni_feature) = feat
+    tree%thresholds(nodeid) = thr
+    tree%nodes(nodeid)%split = .false.
 
     ! Update the new nodes basic information
     newnode = [1, 2] + n_nodes
-    tree%net%nodes(newnode)%id = [left_id, right_id] + n_nodes
-    tree%net%nodes(newnode)%isterminal = 1
-    tree%net%nodes(newnode)%fathernode = nodeid
-    tree%net%nodes(newnode)%depth = tree%net%nodes(nodeid)%depth + 1
-    tree%net%nodes(newnode)%feature = feat
-    tree%net%nodes(newnode)%threshold = thr
-    tree%net%nodes(newnode)%split = .true.
-
-    ! copy and update the bounds for the new nodes
-    !  - update upper bound for the left child
-    !  - update lower bound for the right child
-    tree%net%nodes(newnode(1))%bounds = tree%net%nodes(nodeid)%bounds
-    tree%net%nodes(newnode(2))%bounds = tree%net%nodes(nodeid)%bounds
-    tree%net%nodes(newnode(1))%bounds(feat, 2) = thr
-    tree%net%nodes(newnode(2))%bounds(feat, 1) = thr
+    tree%nodes_info(newnode, idx_ni_id) = [left_id + n_nodes, right_id + n_nodes]
+    tree%nodes_info(newnode, idx_ni_terminal) = 1
+    tree%nodes_info(newnode, idx_ni_father) = nodeid
+    tree%nodes_info(newnode, idx_ni_depth) = tree%nodes_info(nodeid, idx_ni_depth) + 1
+    tree%nodes_info(newnode, idx_ni_feature) = feat
+    tree%thresholds(newnode) = thr
+    tree%nodes(newnode)%split = .true.
 
     ! save only the best candidate information for the parent node
-    tree%net%nodes(nodeid)%state%n_cand_found = 1
-    best(1) = tree%net%nodes(nodeid)%state%best(splitid)
-    tree%net%nodes(nodeid)%state%best = best
+    tree%nodes(nodeid)%n_cand_found = 1
+    best(1) = tree%nodes(nodeid)%best(splitid)
+    tree%nodes(nodeid)%best = best
 
     ! update the region variable in the net
-    tree%net%region(tree%net%nodes(nodeid)%state%idx) = best(1)%regid + n_nodes
+    tree%region(tree%nodes(nodeid)%idx) = best(1)%regid + n_nodes
 
     ! Initializing the state variable. New nodes always need update
     ! (other variables will be set after checking basic stopping criterias, if needed)
-    tree%net%nodes(newnode(1))%state = null_state
-    tree%net%nodes(newnode(2))%state = null_state
-    tree%net%nodes(newnode(1))%state%update = .true.
-    tree%net%nodes(newnode(2))%state%update = .true.
+    tree%nodes(newnode(1))%update = .true.
+    tree%nodes(newnode(2))%update = .true.
 
     ! reset counter
-    tree%net%n_cand_found = 0
+    tree%n_cand_found = 0
   end subroutine update_best_tree_net
 
   subroutine split_full_analysis(tree, best_id, n_cand_found)
@@ -1610,7 +1791,7 @@ contains
     !
     ! ARGUMENTS
     !   tree         [inout] : tree_model, tree object to update.
-    !   best_id      [in]    : Integer(:,:), IDs of the best candidates.
+    !   best_id      [in]    : Integer, IDs of the best candidates.
     !   n_cand_found [in]    : Integer, number of candidates to check.
     !
     ! Added July/2025
@@ -1618,14 +1799,17 @@ contains
     implicit none
     type(tree_model), intent(inout) :: tree
     integer, intent(in) :: n_cand_found
-    integer, intent(in) :: best_id(n_cand_found, 2)
+    integer, intent(in) :: best_id(:, :)
     real(dp) :: mse_temp, mse_best
-    real(dp) :: p(tree%train%n_obs, tree%net%n_tn + 1)
     real(dp), allocatable :: gamma_temp(:), gamma_best(:)
-    real(dp) :: yhat_temp(tree%train%n_obs), yhat_best(tree%train%n_obs)
+    real(dp), allocatable :: yhat_temp(:), yhat_best(:)
+    real(dp), allocatable :: p_work(:, :)
     integer :: k, nodeid, splitid, split_id(2)
 
-    mse_best = tree%net%mse ! sum of squares of residuals
+    allocate(yhat_temp(tree%n_train), source = 0.0_dp)
+    allocate(yhat_best(tree%n_train), source = 0.0_dp)
+    allocate(p_work(tree%n_train, tree%n_tn + 1), source = 0.0_dp)
+    mse_best = tree%mse_train ! sum of squares of residuals
     split_id = -1
 
     do k = 1, n_cand_found
@@ -1634,7 +1818,7 @@ contains
 
       ! Compute the mse for current candidate and check if the new split improves the mse
       ! Recompute gammahat and yhat for the best tree at the end
-      call update_mse(tree, nodeid, splitid, p, gamma_temp, yhat_temp, mse_temp)
+      call update_mse(tree, nodeid, splitid, gamma_temp, yhat_temp, mse_temp, p_work)
 
       if (mse_temp < mse_best) then
         ! If it does, update the best net and mse
@@ -1651,21 +1835,21 @@ contains
     ! No need to update nodes to terminal. The algorithm will stop as there are
     ! no more candidates to split.
     if (split_id(1) < 0) then
-      tree%net%nodes%split = .false.
+      tree%nodes(1:tree%n_nodes)%split = .false.
       return
     end if
 
     ! If a split was found, check if the split is worth it using cp criterion.
     ! If the split is not worth it, disables further splitting and returns.
-    if (mse_best > (1 - tree%ctrl%cp) * tree%net%mse) then
-      tree%net%nodes%split = .false.
+    if (mse_best > (1 - tree%cp) * tree%mse_train) then
+      tree%nodes(1:tree%n_nodes)%split = .false.
       return
     end if
 
     ! full update the tree using the best candidate
-    tree%net%gammahat = gamma_best
-    tree%net%yhat = yhat_best
-    tree%net%mse = mse_best
+    tree%gammahat = gamma_best
+    tree%yhat_train = yhat_best
+    tree%mse_train = mse_best
     call update_best_tree_net(tree, split_id)
   end subroutine split_full_analysis
 
@@ -1704,24 +1888,31 @@ contains
     integer, allocatable :: best_id(:, :)
     real(dp), allocatable :: best_score(:)
     logical :: first, fail
+    integer :: max_best
+
+    ! Pré-aloca a capacidade máxima possível fora do laço para evitar alocações repetidas
+    max_best = tree%n_cand
+    if (tree%by_node) max_best = max_best * tree%max_tn
+    allocate(best_id(max_best, 2), source = 0)
+    allocate(best_score(max_best), source = 0.0_dp)
 
     ! Main loop to create divisions.
     !  - Uses a stopping criteria based on the number of terminal nodes (max_tn)
-    grow_loop: do while ((tree%net%n_tn < tree%ctrl%max_tn))
+    grow_loop: do while ((tree%n_tn < tree%max_tn))
 
       ! No need to check when n_tn = 1 (always ok)
       ! If n_tn > 1 update do_split and n_split using basic stopping criteria
       !  - criteria used in this step: depth, min_prop, min_prob and max_d
       !    (only needs to check the last two childs)
-      if (tree%net%n_tn == 1) then
+      if (tree%n_tn == 1) then
         n_split = 1
         do_split = [1]
       else
         ! Updates the list of splittable nodes
-        call update_split_candidates(tree%net, tree%ctrl, tree%train%n_obs, n_split, do_split)
+        call update_split_candidates(tree, n_split, do_split)
         ! If no further splits are possible we are done growing the three
         if (n_split == 0) then
-          if (printinfo >= log_detailed) then
+          if (tree%printinfo >= log_detailed) then
             ! Debug: Print node splitting info
             call labelpr("    No more candidates to split", -1)
             call labelpr(" ", -1)
@@ -1732,26 +1923,26 @@ contains
         ! If n_tn = 1 thresholds and NA masks were already computed during initialization
         ! Otherwhise, update the thresholds information and NA masks for the nodes created in the last iteration
         ! (to avoid unnecessary updates child nodes were not updated when the parent node was splitted)
-        call update_node_state(tree, fail)
+        call update_node_state(tree, fail)    ! left and right child
 
         ! if the last two nodes are the only splittable nodes and there are no more
         ! thresholds then the search for a new tree is over (no need to update to terminal)
         if (fail) then
-           if (n_split <= 2 .and. do_split(1) >= tree%net%n_nodes - 1) return
+           if (n_split <= 2 .and. do_split(1) >= tree%n_nodes - 1) return
         end if
       end if
 
       ! Atempting a new split.
       !  - If n_tn = 1, finds the best candidates
       !  - if n_tn > 1 loop over the new nodes (if splittable) and update the list of candidates
-      if (printinfo >= log_detailed) then
+      if (tree%printinfo >= log_detailed) then
         ! Debug: Print node splitting info
         call labelpr("**************************************************", -1)
         call labelpr("    Attempting a new split ", -1)
         call labelpr("**************************************************", -1)
         call labelpr("Current status", -1)
-        call intpr1("    Nodes (n_nodes):", -1, tree%net%n_nodes)
-        call intpr1("    Terminal nodes (n_tn):", -1, tree%net%n_tn)
+        call intpr1("    Nodes (n_nodes):", -1, tree%n_nodes)
+        call intpr1("    Terminal nodes (n_tn):", -1, tree%n_tn)
         call intpr("    Candidates to split:", -1, do_split, n_split)
         call labelpr(" ", -1)
       end if
@@ -1763,10 +1954,8 @@ contains
       ! - first: controls if best_id is to be initialized or updated
       ! - best_id and best_score: informations about the best candidates
 
-      n_best = tree%ctrl%n_cand          ! at least 1 candidate is needed
-      if (tree%ctrl%by_node) n_best = n_best * n_split
-      best_id = matrix(n_best, 2, 0)
-      best_score = vector(n_best, 0.0_dp)
+      n_best = tree%n_cand          ! at least 1 candidate is needed
+      if (tree%by_node) n_best = n_best * n_split
       first = .true.
 
       ! step 1: uses proxy mse score
@@ -1779,44 +1968,42 @@ contains
       loop_search: do i = 1, n_split
         ! the current candidate for splitting
         nodeid = do_split(i)
-        if (.not. tree%net%nodes(nodeid)%split) cycle
+        if (.not. tree%nodes(nodeid)%split) cycle
 
         ! Check if the the node needs update
         ! If update = .false. then the best candidates for this node remain the same
-        if (.not. tree%net%nodes(nodeid)%state%update) then
+        if (.not. tree%nodes(nodeid)%update) then
           ! Update the best candidates list
-          call update_best_list_global( &
-            n_best, best_id, best_score, nodeid, tree%net%nodes(nodeid)%state%n_cand_found, &
-            tree%net%nodes(nodeid)%state%best, tree%ctrl%by_node, first, n_cand_found)
+          call update_best_list_global(n_best, best_id(1:n_best, :), best_score(1:n_best), &
+            nodeid, tree%nodes(nodeid)%n_cand_found, tree%nodes(nodeid)%best, tree%by_node, &
+            first, n_cand_found)
           cycle
         end if
 
-        if (printinfo >= log_detailed) then
+        if (tree%printinfo >= log_detailed) then
           ! Debug: Print node splitting info
           call intpr1("    Searching candidates for node Id:", -1, nodeid)
-          call intpr1("    Node observations (n_obs):", -1, tree%net%nodes(nodeid)%state%n_obs)
-          if (printinfo >= log_debug_deep) then
-            call intpr("    Indexes", -1, tree%net%nodes(nodeid)%state%idx, tree%net%nodes(nodeid)%state%n_obs)
+          call intpr1("    Node observations (n_obs_node):", -1, tree%nodes(nodeid)%n_obs_node)
+          if (tree%printinfo >= log_debug_deep) then
+            call intpr("    Indexes", -1, tree%nodes(nodeid)%idx, tree%nodes(nodeid)%n_obs_node)
           end if
           call labelpr(" ", -1)
         end if
 
         ! loop over all variables to find the best n_cand for the current node
-        col_id = findloc(tree%net%tn_id == nodeid, value=.true., dim=1)
-        call find_node_splits(tree%net%nodes(nodeid)%state, tree%train, tree%ctrl, &
-                              tree%net%nodes(nodeid)%bounds, tree%net%p(:, col_id), &
-                              tree%net%n_zero(col_id), tree%net%p_zero(:, col_id), tree%dist)
+        col_id = findloc(tree%tn_id(1:tree%n_tn) == nodeid, value=.true., dim=1)
+      call find_node_splits(tree, nodeid, tree%p(:, col_id))
 
         ! disabling further split attempts for nodes that do not have enough data.
-        if (tree%net%nodes(nodeid)%state%n_cand_found == 0) then
-          call update_node_to_terminal(tree%net%nodes(nodeid))
+        if (tree%nodes(nodeid)%n_cand_found == 0) then
+          call update_node_to_terminal(tree%nodes(nodeid))
           cycle
         end if
 
         ! if at least one candidate was found, update the best candidates list
         call update_best_list_global( &
-          n_best, best_id, best_score, nodeid, tree%net%nodes(nodeid)%state%n_cand_found, &
-          tree%net%nodes(nodeid)%state%best, tree%ctrl%by_node, first, n_cand_found)
+          n_best, best_id(1:n_best, :), best_score(1:n_best), nodeid, tree%nodes(nodeid)%n_cand_found, &
+          tree%nodes(nodeid)%best, tree%by_node, first, n_cand_found)
       end do loop_search
 
       ! if no candidates were found, there is no split possible
@@ -1829,7 +2016,6 @@ contains
       !   - uses the cp to check if the split is worth it
       !   - if the split is not worth it, all nodes are set as terminal
       ! On exit, returns the updated tree if a good candidate was found
-
       n_cand_found = min(n_cand_found, n_best)
       call split_full_analysis(tree, best_id(1:n_cand_found, :), n_cand_found)
     end do grow_loop
@@ -1838,54 +2024,56 @@ contains
   !===============================================================================
   ! STEP 4: Predict using validation/test data
   !===============================================================================
-  pure function prob_rgivenx_no_na(argsd, n_obs, x, bounds, sigma) result(prob)
+  function prob_rgivenx_no_na(argsd, n_test, x, b_lower, b_upper, sigma) result(prob)
     !-------------------------------------------------------------------------------------
     ! Compute the probability P(R | X) = Psi(X, R, sigma) when there are no missing values
     ! and only one feature. Uses the vectorized form of pdist
     !
     ! ARGUMENTS
     !   argsd   [in] : argsDist, distribution related parameters.
-    !   n_obs   [in] : Integer, number of observations.
-    !   X       [in] : Real(dp), vector of feature values (n_obs).
-    !   bounds  [in] : Real(dp), region bounds.
-    !   sigma   [in] : Real(dp), standard deviations for each feature.
+    !   n_test  [in] : Integer, number of test observations.
+    !   X       [in] : Real, vector of feature values (n_test).
+    !   b_lower [in] : Real, lower region bound.
+    !   b_upper [in] : Real, upper region bound.
+    !   sigma   [in] : Real, standard deviations for each feature.
     !
     ! Added July/2025
     !-------------------------------------------------------------------------------------
     implicit none
     type(argsdist), intent(in) :: argsd
-    integer, intent(in) :: n_obs
-    real(dp), intent(in) :: x(n_obs)
-    real(dp), intent(in) :: bounds(2)
+    integer, intent(in) :: n_test
+    real(dp), intent(in) :: x(n_test)
+    real(dp), intent(in) :: b_lower, b_upper
     real(dp), intent(in) :: sigma
-    real(dp) :: prob(n_obs)
+    real(dp), allocatable :: prob(:)
 
+    allocate(prob(n_test))
     ! The conditional checks on bounds are structured to handle the most common case (finite bounds) first.
-    if (bounds(1) > neg_inf .and. bounds(2) < pos_inf) then
+    if (b_lower > neg_inf .and. b_upper < pos_inf) then
       ! Case 1: R = [lower, upper]. (Most likely)
-      prob = pdist(argsd, n_obs, bounds(2), x, sigma) - pdist(argsd, n_obs, bounds(1), x, sigma)
-    else if (bounds(1) <= neg_inf) then
+      prob = pdist(argsd, n_test, b_upper, x, sigma) - pdist(argsd, n_test, b_lower, x, sigma)
+    else if (b_lower <= neg_inf) then
       ! Case 2: Lower bound is -inf
-      if (bounds(2) < pos_inf) then
+      if (b_upper < pos_inf) then
         ! Subcase 2.1: R = (-inf, upper].
-        prob = pdist(argsd, n_obs, bounds(2), x, sigma)
+        prob = pdist(argsd, n_test, b_upper, x, sigma)
       else
         ! Subcase 2.2: R = (-inf, +inf). (Very unlikely)
         prob = 1.0_dp
       end if
     else
       ! Case 3: R = [lower, +inf).
-      prob = 1.0_dp - pdist(argsd, n_obs, bounds(1), x, sigma)
+      prob = 1.0_dp - pdist(argsd, n_test, b_lower, x, sigma)
     end if
   end function prob_rgivenx_no_na
 
-  pure subroutine prob_rgivenx_sf(n_obs, x, na, n_tn, depth, bounds, p, sigma, argsd)
+  subroutine prob_rgivenx_sf(n_test, x, na, n_tn, depth, bounds, p, sigma, argsd)
     implicit none
-    integer, intent(in) :: n_obs, n_tn
+    integer, intent(in) :: n_test, n_tn
     integer, intent(in) :: depth(n_tn)
-    real(dp), intent(in) :: x(n_obs), bounds(n_tn, 2), sigma
-    logical, intent(in) :: na(n_obs)
-    real(dp), intent(inout) :: p(n_obs, n_tn)
+    real(dp), intent(in) :: x(n_test), bounds(n_tn, 2), sigma
+    logical, intent(in) :: na(n_test)
+    real(dp), intent(inout) :: p(n_test, n_tn)
     type(argsdist), intent(in) :: argsd
     integer :: i, k, n_comp
     logical :: is_complete
@@ -1897,27 +2085,27 @@ contains
     ! DIRECT APPROACH: Optimization for complete data and single feature
     if (is_complete) then
       do k = 1, n_tn
-        p(:, k) = prob_rgivenx_no_na(argsd, n_obs, x, bounds(k, :), sigma)
+        p(:, k) = prob_rgivenx_no_na(argsd, n_test, x, bounds(k, 1), bounds(k, 2), sigma)
       end do
       return
     end if
 
     ! (a) Process all entries that do not have missing values.
-    idx = pack([(i, i=1, n_obs)], mask=.not. na)
+    idx = pack([(i, i=1, n_test)], mask=.not. na)
     n_comp = size(idx)
     if (n_comp > 0) then
       ! DIRECT APPROACH: Optimization for complete data and single feature.
-      ! The maximum number of calls to pdist is 2 * n_tn * n_obs
+      ! The maximum number of calls to pdist is 2 * n_tn * n_test
       do k = 1, n_tn
-        p(idx, k) = prob_rgivenx_no_na(argsd, n_comp, x(idx), bounds(k, :), sigma)
+        p(idx, k) = prob_rgivenx_no_na(argsd, n_comp, x(idx), bounds(k, 1), bounds(k, 2), sigma)
       end do
     end if
 
     ! (b) If no entries with missing values remain, exit.
     if (n_comp == 0) then
-      idx = [(i, i=1, n_obs)]
+      idx = [(i, i=1, n_test)]
     else
-      idx = pack([(i, i=1, n_obs)], mask=na)
+      idx = pack([(i, i=1, n_test)], mask=na)
     end if
 
     ! (c) Process missing entries hierarchically. Since there exist only one feature,
@@ -1925,14 +2113,14 @@ contains
     !     This is calculated directly for each terminal node.
     do k = 1, n_tn
       if (depth(k) < max_prob_depth) then
-        p(idx, k) = 1.0_dp / 2**depth(k)
+        p(idx, k) = scale(1.0_dp, -depth(k))
       else
         p(idx, k) = 0.0_dp
       end if
     end do
   end subroutine prob_rgivenx_sf
 
-  pure function prob_rgivenx(argsd, n_obs, n_feat, x, sigma, fill, n_tn, tn, nodes_info, bounds) result(p)
+  function prob_rgivenx(argsd, n_test, n_feat, x, sigma, fill, n_tn, tn, nodes_info, thresholds) result(p)
     !-----------------------------------------------------------------------------
     ! Computes probability matrix P for new data with missing values.
     ! The calculation is done hierarchically to mimic the procedure followed
@@ -1940,19 +2128,18 @@ contains
     !
     ! ARGUMENTS
     !   argsd      [in] : argsDist, distribution related parameters.
-    !   n_obs      [in] : Integer, number of observations.
+    !   n_test     [in] : Integer, number of test observations.
     !   n_feat     [in] : Integer, number of features.
-    !   X          [in] : Real(dp), data matrix (n_obs x n_feat).
-    !   sigma      [in] : Real(dp), vector of sigmas (n_feat).
+    !   X          [in] : Real, data matrix (n_test x n_feat).
+    !   sigma      [in] : Real, vector of sigmas (n_feat).
     !   fill       [in] : Integer, fill strategy for missing values.
     !   n_tn       [in] : Integer, number of terminal nodes.
     !   tn         [in] : Integer, terminal nodes index.
-    !   nodes_info [in] : Integer, information on nodes. (2*n_tn - 1, 4)
-    !                     (isTerminal, father, depth, feature)
-    !   bounds     [in] : Real(dp), bounds for each feature in the nodes.
-    !                     (n_feat * (2 * n_tn - 1), 2)
-    !   p          [out]: Real(dp), the resulting probability matrix
-    !                     of size (n_obs x n_tn).
+    !   nodes_info [in] : Integer, information on nodes. (2*n_tn - 1, :)
+    !                     (id* optional, isTerminal, father, depth, feature)
+    !   thresholds [in] : Real, thresholds for the nodes.
+    !   p          [out]: Real, the resulting probability matrix
+    !                     of size (n_test x n_tn).
     !
     ! DETAILS
     !   This function uses two main strategies based on the number of features:
@@ -1965,21 +2152,35 @@ contains
     !-----------------------------------------------------------------------------
     implicit none
     type(argsdist), intent(in) :: argsd
-    integer, intent(in) :: n_obs, n_feat, n_tn, fill
-    integer, intent(in) :: tn(n_tn), nodes_info(2 * n_tn - 1, 4)
-    real(dp), intent(in) :: x(n_obs, n_feat), sigma(n_feat)
-    real(dp), intent(in) :: bounds(n_feat * (2 * n_tn - 1), 2)
-    real(dp) :: p(n_obs, n_tn)
+    integer, intent(in) :: n_test, n_feat, n_tn, fill
+    integer, intent(in) :: tn(:)
+    integer, intent(in) :: nodes_info(:, :)
+    real(dp), intent(in) :: x(:, :), sigma(:)
+    real(dp), intent(in) :: thresholds(:)
+    real(dp), allocatable :: p(:, :)
 
     ! Local variables
-    integer :: i, k, n_nodes, father_id, f, n_miss(n_feat)
-    integer :: n_imp, n_prob, n_zero, n_info
-    integer, allocatable :: imp_feat(:), idx(:)
-    logical :: na(n_obs, n_feat), is_complete, p_zero(n_obs)
-    logical, allocatable :: na_info(:, :)
-    real(dp) :: p_matrix(n_obs, 2 * n_tn - 1)
-    real(dp) :: bd(n_feat, 2), threshold, bd1(n_tn, 2)
-    type(idx_prob) :: idx_p, null_idx_p
+    integer :: i, k, n_nodes, fa_id, f, offset, ncol_ni
+    integer :: n_imp, n_prob, n_zero
+    integer :: imp_feat(n_feat)
+    integer, allocatable :: idx(:), n_miss(:)
+    logical :: is_complete
+    logical, allocatable :: na(:, :), p_zero(:)
+    real(dp), allocatable :: p_matrix(:, :)
+    real(dp), allocatable :: bd1(:, :)
+    real(dp) :: b_lower, b_upper
+    type(idx_prob) :: idx_p
+
+    allocate(p(n_test, n_tn))
+    allocate(na(n_test, n_feat))
+    allocate(p_zero(n_test))
+    allocate(p_matrix(n_test, 2 * n_tn - 1))
+    allocate(n_miss(n_feat))
+    allocate(bd1(n_tn, 2))
+
+    ! Offset mapping based on ncol_ni: 0 if 5 columns, 1 if 4 columns
+    ncol_ni = size(nodes_info, 2)
+    offset = 5 - ncol_ni
 
     ! Early exit: if only one terminal node, probability is 1 for all observations.
     if (n_tn == 1) then
@@ -1997,15 +2198,20 @@ contains
     if (n_feat > 1) then
       ! Number of missing values by feature
       n_miss = count(na, dim=1)
-      idx = [(i, i=1, n_feat)]
       ! Features used to build the tree
-      imp_feat = pack(idx, mask=[(any(idx(i) == nodes_info(:, 4)), i=1, n_feat)])
-      n_imp = size(imp_feat)
+      n_imp = count([(any(i == nodes_info(:, idx_ni_feature - offset)), i=1, n_feat)])
+      if (n_imp > 0) then
+        imp_feat(1:n_imp) = pack([(i, i=1, n_feat)], &
+          mask=[(any(i == nodes_info(:, idx_ni_feature - offset)), i=1, n_feat)])
+      else
+        n_imp = 1
+        imp_feat(1) = 1
+      end if
       ! mask for complete dataset
-      is_complete = all(n_miss(imp_feat) == 0)
+      is_complete = all(n_miss(imp_feat(1:n_imp)) == 0)
     else
       n_imp = 1
-      imp_feat = [1]
+      imp_feat(1) = 1
     end if
 
     ! Case 1: Single important feature.
@@ -2014,244 +2220,257 @@ contains
     if (n_imp == 1) then
       f = imp_feat(1)
       do i = 1, n_tn
-        bd1(i, :) = bounds((tn(i) - 1) * n_feat + f, :)
+        call get_feature_bounds(tn(i), f, nodes_info, thresholds, bd1(i, 1), bd1(i, 2))
       end do
-      call prob_rgivenx_sf(n_obs, x(:, f), na(:, f), n_tn, nodes_info(tn, 3), bd1, p, sigma(f), argsd)
+      call prob_rgivenx_sf(n_test, x(:, f), na(:, f), n_tn,&
+       nodes_info(tn, idx_ni_depth - offset), bd1, p, sigma(f), argsd)
       return
     end if
 
     ! Case 2: Multiple features. Process all entries hierarchically.
-    ! HIERARCHICAL APPROACH:  The maximum number of calls to pdist is 3 * (n_tn - 1) * n_obs.
+    ! HIERARCHICAL APPROACH:  The maximum number of calls to pdist is 3 * (n_tn - 1) * n_test.
     ! Loop through sibling pairs to compute probabilities.
-
-    ! Allocate na_info once before the loop to avoid repeated allocations
-    if (.not. is_complete) then
-      n_info = merge(n_feat, n_feat + 1, fill == 2)
-      na_info = matrix(n_obs, n_info, .false.)
-    end if
 
     p_matrix(:, 1) = 1.0_dp  ! root node
     do k = 2, n_nodes - 1, 2
       ! find the current father node id and splitting feature
-      father_id = nodes_info(k, 2)
-      f = nodes_info(father_id, 4)
+      fa_id = nodes_info(k, idx_ni_father - offset)
+      f = nodes_info(fa_id, idx_ni_feature - offset)
 
       ! To preserve probability, if the father's node is near zero,
       ! all the probability is kept in the left node.
-      p_zero = (p_matrix(:, father_id) <= eps)
+      p_zero = (p_matrix(:, fa_id) <= eps)
       n_zero = count(p_zero)
       if (n_zero > 0) then
         where (p_zero)
-          p_matrix(:, k) = p_matrix(:, father_id)
+          p_matrix(:, k) = p_matrix(:, fa_id)
         end where
         ! pack non zero indexes (needs update to remove NA entries)
-        idx = pack([(i, i=1, n_obs)], mask=.not. p_zero)
+        idx = pack([(i, i=1, n_test)], mask=.not. p_zero)
       else
         ! pack non zero indexes (needs update to remove NA entries)
-        idx = [(i, i=1, n_obs)]
+        idx = [(i, i=1, n_test)]
       end if
       n_prob = size(idx)
 
-      ! bounds for the father node and splitting threshold
-      bd = bounds(n_feat * (father_id - 1) + 1:n_feat * father_id, :)
-      threshold = bounds(n_feat * (k - 1) + f, 2)
-
-      ! select important features for the current node using bounds for the
-      ! father node and the current feature id.
-      call select_imp_features(f, n_feat, bd, imp_feat, n_imp)
-
-      ! Initialize idx_p to a null state to prevent uninitialized use
-      idx_p = null_idx_p
+      call get_node_imp_features(k, nodes_info, imp_feat, n_imp)
 
       ! if there are no missing values, then only checks the p_zero mask
       if (is_complete) then
-        idx_p%n_miss = 0
+        idx_p%n_miss_f = 0
+        idx_p%n_miss_any = 0
         idx_p%idx = idx ! p > 0
       else
-        ! update the masks to take into account p_zero.
-        ! This changes for each node and cannot be set outside the loop
-        na_info(:, 1:n_feat) = na
-        do i = 1, n_feat
-          where (p_zero)
-            na_info(:, i) = .false. ! Xf could be missing but P(father) <= eps
-          end where
-        end do
-        ! Set the indexes bases on the masks and the fill type
-        select case (fill)
-        case (0, 1)
-          ! Find the indexes where any X is missing and P > eps
-          na_info(:, n_info) = any(na_info(:, imp_feat), dim=2)
-          call get_idx_prob(idx_p, n_obs, n_info, na_info, n_prob, idx, fill, f, .false.)
-        case (2)
-          call get_idx_prob(idx_p, n_obs, n_info, na_info, n_prob, idx, fill, f, .false.)
-        end select
+        ! na gives the mask for missing values while idx gives the indexes of P > eps
+        ! Xf could be missing but P(father) <= eps
+        call get_idx_prob(idx_p, na, n_imp, imp_feat, n_prob, idx, fill, f)
       end if
 
+      call get_feature_bounds(fa_id, f, nodes_info, thresholds, b_lower, b_upper)
+
       ! update the probability matrix
-      call update_prob(argsd, idx_p, n_obs, x(:, f), threshold, bd(f, :), sigma(f), fill, &
-                       p_matrix(:, father_id), p_matrix(:, k:k + 1))
+      call update_prob(argsd, idx_p, x(:, f), thresholds(fa_id), b_lower, b_upper, &
+        sigma(f), fill, p_matrix(:, fa_id), p_matrix(:, k:k + 1))
     end do
     p = p_matrix(:, tn)
   end function prob_rgivenx
 
-  pure subroutine predict_tree(tree)
+  subroutine predict_tree(tree)
     implicit none
     type(tree_model), intent(inout) :: tree
-    integer :: n_feat, i
-    integer :: nodes_info(tree%net%n_nodes, 4)
-    real(dp) :: bounds(tree%train%n_feat * tree%net%n_nodes, 2)
-    real(dp) :: yhat(tree%test%n_obs)
+    integer :: n_feat
+    real(dp), allocatable :: yhat(:)
+
+    if (tree%n_test == 0) then
+      ! If there is no holdout set, use the training MSE as the selection criterion.
+      tree%mse_test = tree%mse_train
+      return
+    end if
+
+    ! Compute predictions and validation/test MSE for the current candidate tree.
+    allocate(yhat(tree%n_test))
 
     ! Set the information to pass to the probability function
-    n_feat = tree%train%n_feat
-    nodes_info(:, 1) = tree%net%nodes%isterminal
-    nodes_info(:, 2) = tree%net%nodes%fathernode
-    nodes_info(:, 3) = tree%net%nodes%depth
-    nodes_info(:, 4) = tree%net%nodes%feature
-
-    ! Find the bounds for each node and important features
-    do i = 1, tree%net%n_nodes
-      bounds((i - 1) * n_feat + 1:i * n_feat, :) = tree%net%nodes(i)%bounds
-    end do
+    n_feat = tree%n_feat
 
     !---------------------------------------------
     ! filling the matrix P with the values
     !    Psi(x, Rj, sigma), 1 <= j <= n_tn
     ! where Rj is the j-th terminal node (reg)
     !---------------------------------------------
-    tree%test%p = prob_rgivenx(tree%dist, tree%test%n_obs, n_feat, tree%test%x, tree%train%sigma, &
-                               tree%train%fill, tree%net%n_tn, tree%net%tn_id, nodes_info, bounds)
-    yhat = matmul(tree%test%p, tree%net%gammahat)
-    tree%test%yhat = yhat
-    tree%test%mse = sum((tree%test%yhat - tree%test%y)**2)
+    tree%p_test = 0.0_dp
+    tree%p_test(:, 1:tree%n_tn) = prob_rgivenx(tree%dist, tree%n_test, n_feat, tree%x_test, &
+      tree%sigma, tree%fill, tree%n_tn, tree%tn_id(1:tree%n_tn), tree%nodes_info, tree%thresholds)
+    yhat = matmul(tree%p_test(:, 1:tree%n_tn), tree%gammahat(1:tree%n_tn))
+    tree%yhat_test = yhat
+    tree%mse_test = sum((tree%yhat_test - tree%y_test)**2)
   end subroutine predict_tree
 
   !===============================================================================
   ! STEP 5: Extract the information from the treee object
   !===============================================================================
-  pure subroutine return_tree_train(net, n_obs, n_feat, n_train, idx_train, max_tn, n_tn, &
-                               nodes_info, thresholds, bounds, p, gammahat, yhat, mse, xregion)
+  subroutine return_tree(tree, n_tn, nodes_info, thresholds, yhat_train, yhat_test, mse, xregion, final)
     !----------------------------------------------------------------------------
     ! Returns the final tree structure to R.
     ! This subroutine copies the values from the final tree structure
     ! to the output vectors and matrices.
     !
     ! ARGUMENTS
-    !   net        [in]    : tree_net, final tree structure.
-    !   n_obs      [in]    : Integer, number of observations.
-    !   n_feat     [in]    : Integer, number of features.
-    !   n_train    [in]    : Integer, number of training observations.
-    !   idx_train  [in]    : Integer(:), indices of training observations.
-    !   max_tn     [in]    : Integer, maximum number of terminal nodes.
+    !   tree       [in]    : tree_model, fitted tree object
     !   n_tn       [out]   : Integer, number of terminal nodes in the final tree.
     !   nodes_info [out]   : Integer, matrix with information about the nodes
     !                        in the final tree. (2 * max_tn - 1, 5)
-    !   thresholds [inout] : Real(dp), vector of thresholds defining the
+    !   thresholds [inout] : Real, vector of thresholds defining the
     !                         regions in the final tree. (2 * max_tn - 1)
-    !   bounds     [inout] : Real(dp), bounds for each feature in the nodes.
-    !                        (n_feat * (2 * max_tn - 1), 2)
-    !   P          [inout] : Real(dp), probability matrix for the final tree
-    !                        (n_obs x max_tn).
-    !   gammahat   [inout] : Real(dp), vector of coefficients for the final tree
-    !                        (max_tn).
-    !   yhat       [inout] : Real(dp), predicted values for Y (n_obs).
-    !   mse        [inout] : Real(dp), mean square error for the final tree.
+    !   yhat_train [inout] : Real, predicted values for Y (n_train).
+    !   yhat_test  [inout] : Real, predicted values for Y (n_test).
+    !   mse        [inout] : Real, mean square error for the final tree.
     !   Xregion    [inout] : Integer, matrix with the indices of the features
-    !                        used in the nodes (n_obs).
+    !                        used in the nodes (n_train).
+    !   final      [in]    : Logical, if .true. the code is ready to return
+    !                        to R. Otherwise the tree object needs to be restarted
     !----------------------------------------------------------------------------
+    ! Last updated: May/2026
+    !  - replaced net with the tree object
     implicit none
-    type(tree_net), intent(in) :: net
-    integer, intent(in) :: n_obs, n_feat, max_tn, n_train
-    integer, intent(in) :: idx_train(n_train)
-    integer, intent(out) :: nodes_info(2 * max_tn - 1, 5)
+    type(tree_model), intent(inout) :: tree
+    logical, intent(in) :: final
+    integer, intent(out), target :: nodes_info(:, :)
     integer, intent(out) :: n_tn
-    integer, intent(out) :: xregion(n_obs)
-    real(dp), intent(out) :: thresholds(2 * max_tn - 1)
-    real(dp), intent(out) :: p(n_obs, max_tn), gammahat(max_tn), yhat(n_obs)
-    real(dp), intent(out) :: bounds(n_feat * (2 * max_tn - 1), 2)
-    real(dp), intent(out) :: mse
-    integer :: n_nodes, k
+    integer, intent(out) :: xregion(:)
+    real(dp), intent(out), target :: thresholds(:)
+    real(dp), intent(out) :: yhat_train(:)
+    real(dp), intent(out) :: yhat_test(:)
+    real(dp), intent(out) :: mse(3)
+    integer :: n_nodes
 
     ! Updating the number of terminal nodes
     ! number of nodes in the final tree
-    n_nodes = net%n_nodes
+    n_nodes = tree%n_nodes
 
     ! Updating the number of terminal nodes and P
-    n_tn = net%n_tn
-    p = 0.0_dp
-    do k = 1, n_tn
-      p(idx_train, k) = net%p(:, k)
-    end do
+    n_tn = tree%n_tn
 
-    ! Updating gammahat
-    gammahat = 0.0_dp
-    gammahat(1:n_tn) = net%gammahat
+    ! If the tree is not final, the tree object is being used to store the best candidate tree
+    if(.not. final) then
+      tree%p_temp = tree%p(:, 1:n_tn)
+      tree%gamma_temp = tree%gammahat(1:n_tn)
+      if(tree%n_test > 0) tree%p_test_temp = tree%p_test(:, 1:n_tn)
+    end if
 
     ! predicted values and mse
-    yhat(idx_train) = net%yhat
-    mse = net%mse / n_train
+    yhat_train = tree%yhat_train
+    mse(1) = tree%mse_train / tree%n_train
+    if(tree%n_test > 0) then
+      yhat_test = tree%yhat_test
+      mse(2) = tree%mse_test / tree%n_test
+      mse(3) = (tree%mse_train + tree%mse_test) / tree%n_obs
+    else
+      mse(2) = 0.0_dp
+      mse(3) = mse(1)
+    end if
 
-    ! initializing and updating the nodes_info
+    ! updating the nodes_info
+    if (.not. associated(tree%nodes_info, nodes_info)) then
     nodes_info = 0
-    nodes_info(1:n_nodes, 1) = net%nodes%id
-    nodes_info(1:n_nodes, 2) = net%nodes%isterminal
-    nodes_info(1:n_nodes, 3) = net%nodes%fathernode
-    nodes_info(1:n_nodes, 4) = net%nodes%depth
-    nodes_info(1:n_nodes, 5) = net%nodes%feature
+      nodes_info(1:n_nodes, idx_ni_id) = tree%nodes_info(1:n_nodes, idx_ni_id)
+      nodes_info(1:n_nodes, idx_ni_terminal) = tree%nodes_info(1:n_nodes, idx_ni_terminal)
+      nodes_info(1:n_nodes, idx_ni_father) = tree%nodes_info(1:n_nodes, idx_ni_father)
+      nodes_info(1:n_nodes, idx_ni_depth) = tree%nodes_info(1:n_nodes, idx_ni_depth)
+      nodes_info(1:n_nodes, idx_ni_feature) = tree%nodes_info(1:n_nodes, idx_ni_feature)
+    end if
 
-    ! initializing and updating the thresholds
-    thresholds = 0.0_dp
-    thresholds(1:n_nodes) = net%nodes%threshold
-
-    ! initializing and updating the bounds
-    bounds = 0.0_dp
-    do k = 1, n_nodes
-      bounds((k - 1) * n_feat + 1:k * n_feat, 1) = net%nodes(k)%bounds(:, 1)
-      bounds((k - 1) * n_feat + 1:k * n_feat, 2) = net%nodes(k)%bounds(:, 2)
-    end do
+    ! updating the thresholds
+    if (.not. associated(tree%thresholds, thresholds)) then
+      thresholds = 0.0_dp
+      thresholds(1:n_nodes) = tree%thresholds(1:n_nodes)
+    end if
 
     ! updating Xregion
-    xregion(idx_train) = net%region
-  end subroutine return_tree_train
+    xregion = tree%region
+  end subroutine return_tree
 
-  pure subroutine return_tree_test(test, n_obs, n_test, idx_test, n_tn, p, yhat, mse, xregion)
+  subroutine return_root_only_tree(tree, y_test, keep_full, n_tn, yhat_train, yhat_test,  &
+    p_test, mse, nodes_info, thresholds, sigma_best, xregion)
     !----------------------------------------------------------------------------
-    ! Returns the final tree structure to R.
-    ! This subroutine copies the values from the final tree structure
-    ! to the output vectors and matrices.
+    ! Handles the degenerate case where the root node cannot be split.
+    !
+    ! In this case, the final tree has only one terminal node (the root).
+    ! This routine fills the outputs consistently for both:
+    !   - full-output mode
+    !   - light/CV mode
     !
     ! ARGUMENTS
-    !   test     [in]    : tree_tdata, testing data.
-    !   n_obs    [in]    : Integer, number of observations.
-    !   n_test   [in]    : Integer, number of testing observations.
-    !   idx_test [in]    : Integer(:), indices of testing observations.
-    !   n_tn     [in]    : Integer, number of terminal nodes in the final tree.
-    !   P        [inout] : Real(dp), probability matrix for the final tree
-    !                      (n_obs x n_tn).
-    !   yhat     [inout] : Real(dp), predicted values for Y (n_obs).
-    !   mse      [inout] : Real(dp), mean square error for the final tree.
-    !   Xregion  [inout] : Integer, matrix with the indices of the features
-    !                        used in the nodes (n_obs).
+    !   tree        [inout] : tree_model, fitted root-only tree.
+    !   y_test      [in]    : Real, full response vector.
+    !   keep_full   [in]    : Logical, whether full tree output is required.
+    !   n_tn        [out]   : Integer, number of terminal nodes.
+    !   yhat_train  [inout] : Real, predictions for training set
+    !   yhat_test   [inout] : Real, predictions for test set.
+    !   p_test      [inout] : Real, probabilities for test set.
+    !   mse         [inout] : Real, mean square error for test set.
+    !   nodes_info  [inout] : Integer, node metadata.
+    !   thresholds  [inout] : Real, split thresholds.
+    !   sigma_best  [out]   : Real, selected sigma vector.
+    !   Xregion     [out]   : Integer, assigned region for each training observation (n_train).
+    !
+    ! Added March/2026
     !----------------------------------------------------------------------------
     implicit none
-    type(tree_tdata), intent(in) :: test
-    integer, intent(in) :: n_obs, n_test, n_tn
-    integer, intent(in) :: idx_test(n_test)
-    integer, intent(inout) :: xregion(n_obs)
-    real(dp), intent(inout) :: p(n_obs, n_tn), yhat(n_obs)
-    real(dp), intent(out) :: mse
-    integer :: i
 
-    ! Updating P
-    do i = 1, n_tn
-      p(idx_test, i) = test%p(:, i)
-    end do
+    ! Input
+    type(tree_model), intent(inout) :: tree
+    real(dp), intent(in) :: y_test(:)
+    logical, intent(in) :: keep_full
 
-    ! predicted values and mse
-    yhat(idx_test) = test%yhat
-    mse = test%mse / n_test
+    ! Output
+    integer, intent(out) :: n_tn
+    real(dp), intent(inout) :: mse(3)
+    real(dp), intent(inout) :: yhat_train(:)
+    real(dp), intent(inout) :: yhat_test(:)
+    real(dp), intent(inout) :: p_test(:, :)
+    integer, intent(inout), target :: nodes_info(:, :)
+    real(dp), intent(inout) :: thresholds(:)
+    real(dp), intent(out) :: sigma_best(:)
+    integer, intent(inout) :: xregion(:)
 
-    ! For thest sample, there is no region associated to X.
-    xregion(idx_test) = 0
-  end subroutine return_tree_test
+    ! Local
+    integer :: n_test
+
+    if (tree%printinfo >= log_base) then
+      ! Debug: Print node splitting info
+      call labelpr("Root node cannot be splitted: No thresholds found.", -1)
+      call labelpr(" ", -1)
+    end if
+
+    n_tn = 1
+
+    ! Root-only tree: no sigma was effectively selected
+    sigma_best = 0.0_dp
+
+    ! Number of test observations
+    n_test = tree%n_test
+
+    ! updates yhat_train, P_train and Xregion for the training sample
+    if (keep_full) then
+      ! Serialize the trivial root-only tree to the output buffers
+      call return_tree(tree, n_tn, nodes_info, thresholds, &
+       yhat_train, yhat_test, mse, xregion, .true.)
+       if(n_test > 0) then
+         p_test = 0.0_dp
+         p_test(:, 1) = 1.0_dp
+       end if
+    else
+      ! In light mode, only the training MSE is needed
+      mse(1) = tree%mse_train / tree%n_train
+      if(tree%n_test > 0) then
+        mse(2) = sum((y_test - tree%gammahat(1))**2) / tree%n_test
+        mse(3) = (tree%mse_train + mse(2)) / tree%n_obs
+      else
+        mse(2) = 0
+        mse(3) = mse(1)
+      end If
+    end if
+  end subroutine return_root_only_tree
+
 end module prtree_main

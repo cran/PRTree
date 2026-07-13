@@ -2,140 +2,232 @@
 % Please edit documentation in R/prtree_control.R
 \name{pr_tree_control}
 \alias{pr_tree_control}
-\title{Set Control Parameters for PRTree}
+\title{Control parameters for PRTree}
 \usage{
-pr_tree_control(sigma_grid = NULL, grid_size = 8,
-  max_terminal_nodes = 15L, cp = 0.01, max_depth = max_terminal_nodes -
-  1, n_min = 5L, perc_x = 0.1, p_min = 0.05, perc_test = 0.2,
-  idx_train = NULL, fill_type = 2L, proxy_crit = "both",
-  n_candidates = 3L, by_node = FALSE, dist = "norm", iprint = -1, ...)
+pr_tree_control(sigma_grid = NULL, grid_size = 8, min_mult = 0,
+  max_mult = 2, tiny_sigma = NULL, max_terminal_nodes = 15L,
+  max_depth = max_terminal_nodes - 1, cp = 0.01, n_min = 5L,
+  prop_x = 0.1, p_min = 0.05, prop_hold = 0.2, idx_train = NULL,
+  fill_type = 2L, proxy_crit = "both", n_candidates = 3L,
+  by_node = FALSE, dist = "norm", iprint = -1, verbose = TRUE, ...)
 }
 \arguments{
-\item{sigma_grid}{Optional, a numeric value, vector or a matrix with
-candidate values for the parameter \eqn{\boldsymbol\sigma}, to be passed to
-the grid search algorithm.  If a single numeric value is provided, the code
-assumes that \eqn{\sigma_j  = \sigma} for all \eqn{j} covariates. If
-\code{NULL}, the standard deviations of the columns in \code{X} are used to
-create a grid with values in the interval \eqn{(0, 2\hat\sigma_j]}, with
-increments of \eqn{\hat\sigma_j/4}, where \eqn{\hat\sigma_j} denotes the
-standard deviation of the \eqn{j}th covariate.  The default is \code{NULL}.}
+\item{sigma_grid}{Optional. Custom grid of candidate \eqn{\boldsymbol\sigma}
+vectors. See \sQuote{Details} for accepted formats and behavior. Default is
+\code{NULL} (automatic generation).
 
-\item{grid_size}{Optional, the number of candidate values for `sigma` to
-generate when `sigma_grid` is `NULL`. Default is 8.}
+\strong{Note:} The dimensions of \code{sigma_grid} are not validated inside \link{pr_tree_control}.
+Dimension checking against the number of features is performed internally
+during the execution of \code{pr_tree} or \code{pr_tree_cv}.}
 
-\item{max_terminal_nodes}{A non-negative integer. The maximum number of
-regions in the output tree. The default is 15.}
+\item{grid_size}{Integer. Number of candidate vectors to generate when
+\code{sigma_grid = NULL}. Default is 8. See \sQuote{Details} for how multipliers
+are generated. Ignored when a custom grid is provided.}
 
-\item{cp}{A positive numeric value. The complexity parameter. Any split that
-does not decrease the MSE by a factor of `cp` will be ignored. The
-default is 0.01.}
+\item{min_mult}{Numeric. Minimum multiplier for automatic grid generation.
+Default is 0. See \sQuote{Details} for how this defines the multiplier
+interval. Ignored when a custom grid is provided.}
+
+\item{max_mult}{Numeric. Maximum multiplier for automatic grid generation.
+Default is 2. Ignored when a custom grid is provided.}
+
+\item{tiny_sigma}{A single numeric value or \code{NULL}. If provided, it is added
+to the grid as an additional candidate representing a very small
+\eqn{\sigma} value (same value for all features). This approximates the
+limiting case \eqn{\boldsymbol\sigma \to \boldsymbol{0}}, where the smooth
+assignment function \eqn{\Psi} converges to the hard indicator function,
+recovering deterministic splits. A typical value is \code{1e-20}. See
+\sQuote{Details} for its role in grid generation. Default is \code{NULL}.
+Ignored when a custom grid is provided.}
+
+\item{max_terminal_nodes}{A non-negative integer. The maximum number of terminal
+nodes (regions/leaves) in the output tree. The default is 15.}
 
 \item{max_depth}{A non-negative integer. The maximum depth of the decision
 tree. The depth is defined as the length of the longest path from the root
-to a leaf. The default is 14.}
+to a leaf. The default is \code{max_terminal_nodes - 1}.}
 
-\item{n_min}{A positive integer, The minimum number of observations in a
-final node. The default is `max_terminal_nodes - 1`.}
+\item{cp}{A positive numeric value. The complexity parameter. Any split that
+does not decrease the MSE (mean square error) by a factor of at least \code{cp}
+will be ignored. The default is 0.01.}
 
-\item{perc_x}{A positive numeric value between 0 and 1. Given any
-column of \eqn{P}, `perc_x` is the minimum proportion of rows that
-must have a probability higher than `p_min` for a
-splitting attempt to be made in the corresponding region. The split will be
-ignored if any of the resulting regions do not meet the same criterion. The
-default is 0.1.}
+\item{n_min}{A positive integer. The minimum number of observations required
+in a terminal (final) node. While Probabilistic Regression Trees can
+theoretically handle empty regions, this restriction is enforced to ensure
+the stable and well-posed calculation of the region's cut points
+(thresholds) based on empirical data. The default is 5.}
 
-\item{p_min}{A positive numeric value. A threshold probability that controls
-the splitting process. A splitting attempt is made in a given region only
-when the proportion of rows with probability higher than `p_min`, in
-the corresponding column of the matrix \eqn{P}, is equal to \code{perc_x}.
-The default is 0.05.}
+\item{prop_x}{A numeric value between 0 and 1. The minimum proportion of
+observations in a region that must have a probability greater than \code{p_min}
+to attempt a split. Default is 0.1. See \sQuote{Details} for more information.}
 
-\item{perc_test}{A numeric value between 0 (inclusive) and 1 (exclusive) that
-  specifies the proportion of the data to be held out for model validation or
-  testing. Default is 0.2. The role of this hold-out set depends on the
-  `sigma_grid`
-  \itemize{
-    \item **Validation Set:** If `sigma_grid` contains multiple candidate
-      \eqn{\sigma} values (`grid_size > 1`), `perc_test` of the data is
-      used as a validation set to select the best \eqn{\sigma} based on
-      out-of-sample Mean Squared Error (MSE). If `perc_test` is 0, `sigma`
-      will be selected based on the MSE for the training sample.
+\item{p_min}{A numeric value between 0 and 1. The threshold probability used
+in conjunction with \code{prop_x} to evaluate if a region contains enough
+probability mass to be split. Default is 0.05. See \sQuote{Details}.}
 
-    \item **Test Set:** If a single, fixed \eqn{\sigma} is provided
-      (`grid_size = 1`), `perc_test` of the data is used as a test set to
-      evaluate the final model's performance. If `perc_test` is 0, the
-      entire dataset is used for training.
-  }
-  The data split is performed using stratified sampling to ensure that the
-  proportion of observations with missing values is similar across the
-  training and validation/test sets.}
+\item{prop_hold}{A numeric value between 0 (inclusive) and 1 (exclusive) that
+specifies the proportion of the data to be held out for model validation or
+testing. Default is \code{0.2}. Ignored if \code{idx_train} is provided.}
 
-\item{idx_train}{Indexes for the training sample. Default is `NULL`, in which
-case the indexes are computed based on the `perc_test` argument. If
-`idx_train` is provided, `perc_test` is ignored.}
+\item{idx_train}{Optional integer vector specifying which observations to use
+as the training sample. Default is \code{NULL}. Overrides \code{prop_hold}.}
 
 \item{fill_type}{Integer indicating the method to be used to fill the
-probability matrix when `X` has NA's. Default is 2.
+probability matrix when \code{X} has NA's. Default is 2.
 \itemize{
- \item `0`: uniform (same probability for both child nodes).
- \item `1`: attributes all probability to the child node that is compatible
- with the observed values.
- \item `2`: computes the probability restricted to the observed entries
+\item \code{0}: uniform (same probability for both child nodes).
+\item \code{1}: attributes all probability to the child node that is compatible
+with the observed values.
+\item \code{2}: computes the probability restricted to the observed entries.
 }}
 
-\item{proxy_crit}{Character. Default is `"both"`. Criterion used to associate
+\item{proxy_crit}{Character. Default is \code{"both"}. Criterion used to associate
 an observation with missing values to a region:
 \itemize{
- \item `"mean"`: maximizes the difference in means after a split.
- \item `"var"`: maximizes the variability between nodes.
- \item `"both"`: combines the `"mean"` and `"var"` criteria.
+\item \code{"mean"}: maximizes the difference in means after a split.
+\item \code{"var"}: maximizes the variability between nodes.
+\item \code{"both"}: combines the \code{"mean"} and \code{"var"} criteria.
 }}
 
 \item{n_candidates}{Integer. The number of competing candidates to consider
 when searching for the best split. To select the candidates, a proxy
 improvement measure is used. Then a full analysis is performed to choose
-the best among the `n_candidates` candidates. Default is 3.}
+the best among the \code{n_candidates} candidates. Higher values increase
+accuracy but significantly extend computation time due to the full analysis
+being performed on more splits. Default is 3.}
 
-\item{by_node}{Logical. If `TRUE`, the algorithm selects `n_candidates` for
+\item{by_node}{Logical. If \code{TRUE}, the algorithm selects \code{n_candidates} for
 each node and then makes a full analysis to choose the best among all
-nodes. Otherwise the `n_candidates` are selected globally. Default is
-`FALSE`.}
+nodes. Otherwise the \code{n_candidates} are selected globally. Default is
+\code{FALSE}.}
 
 \item{dist}{Character. The distribution to be used in the model. One of
-`"norm"` (Gaussian), `"lnorm"` (log-normal), `"t"` (Student's \eqn{t}),
-or `"gamma"` (Gamma). Default is `"norm"`.}
+\code{"norm"} (Gaussian), \code{"lnorm"} (log-normal), \code{"t"} (Student's \eqn{t}), or
+\code{"gamma"} (Gamma). Default is \code{"norm"}.}
 
-\item{iprint}{Integer. Controls the verbosity of the Fortran backend.
-Default is -1 (silent).
+\item{iprint}{Integer. Controls the verbosity of the Fortran backend. Default
+is -1 (silent).
 \itemize{
- \item `iprint < 0`: No printing.
- \item `iprint = 0`: Prints basic information.
- \item `iprint > 0`: As for `iprint = 0` plus progress reports.
-  }}
+\item \code{iprint < 0}: No printing.
+\item \code{iprint = 0}: Prints basic information.
+\item \code{iprint > 0}: As for \code{iprint = 0} plus progress reports.
+}}
+
+\item{verbose}{Logical. If \code{TRUE} (default), prints progress and informational
+messages. If \code{FALSE}, suppresses all non-error console output.}
 
 \item{...}{Extra parameters to be passed to the chosen distribution.
 \itemize{
- \item `"norm"`: Uses the standard Gaussian distribution. No extra
-  parameters required.
- \item `"lnorm"`: Uses the log-normal distribution with `meanlog = 0`.
-  Requires `sdlog`.
- \item `"t"`: Uses the \eqn{t} distribution. Requires `df`.
- \item  `"gamma"`: Uses the gamma distribution with `scale = 1`. Requires
-  `shape`.
+\item \code{"norm"}: Uses the standard Gaussian distribution. No extra parameters required.
+\item \code{"lnorm"}: Uses the log-normal distribution with \code{meanlog = 0}. Requires \code{sdlog}.
+\item \code{"t"}: Uses the \eqn{t} distribution. Requires \code{df}.
+\item \code{"gamma"}: Uses the gamma distribution with \code{scale = 1}. Requires \code{shape}.
 }}
 }
 \value{
-A list of class `prtree.control` containing the validated control parameters.
+A list of class \code{prtree.control} containing the validated control
+parameters.
 }
 \description{
-This function creates a list of control parameters for the `pr_tree`
-function, with validation for each parameter.
+This function creates a list of control parameters for the
+\code{pr_tree} function, with validation for each parameter.
+}
+\details{
+\strong{Custom grid specification}
+
+When a custom grid is provided via \code{sigma_grid}, it must follow these rules:
+\itemize{
+\item A \strong{single number} is expanded to a constant vector (same value
+for all features).
+
+\item A \strong{numeric vector} of length \eqn{p} (the number of features)
+is used directly as one candidate vector.
+
+\item A \strong{\eqn{k \times p} numeric matrix} provides \eqn{k} candidates,
+one per row.
+}
+In all custom grid cases, the automatic grid parameters (\code{grid_size},
+\code{min_mult}, \code{max_mult}, \code{tiny_sigma}) are ignored.
+
+\strong{Automatic grid generation}
+
+The automatic grid is generated as follows:
+\itemize{
+\item For each feature \eqn{j}, the base values are the empirical standard deviations
+\eqn{\hat\sigma_j} from the training data.
+
+\item If \code{grid_size = 1}, the grid consists solely of these base values
+\eqn{\hat{\boldsymbol\sigma}}.
+
+\item If \code{grid_size > 1}, the grid is constructed using \code{grid_size}
+multipliers equally spaced in the interval:
+\itemize{
+\item \verb{(min_mult, max_mult]} when \code{min_mult = 0} (excludes 0, includes \code{max_mult}).
+\item \verb{[min_mult, max_mult]} when \code{min_mult > 0} (both inclusive).
+}
+Each multiplier \eqn{m} generates a candidate vector \eqn{m \times \hat{\boldsymbol\sigma}}.
+
+\item If \code{tiny_sigma} is provided, it is added as an extra candidate (first
+row) with \eqn{\boldsymbol\sigma = \text{tiny\_sigma} \cdot
+ \boldsymbol{1}_p}, where \eqn{\boldsymbol{1}_p} is a vector of ones of
+length \eqn{p} (the number of features). This results in a final grid of
+size \code{grid_size + 1}.
+}
+
+\strong{Splitting Constraints and Numerical Stability}
+
+The parameters \code{prop_x} and \code{p_min} work together to control the splitting
+process. A splitting attempt is made in a given region only when at least a
+proportion \code{prop_x} of the training rows have a probability greater than
+\code{p_min} in that region's column of the probability matrix \eqn{P}. The split
+will be ignored if any of the resulting child regions do not meet this same
+criterion.
+
+\strong{Warning:} Setting either parameter to zero may lead to near-zero
+columns in \eqn{P}, making the matrix computationally singular or
+ill-conditioned for inversion.
+
+\strong{Data Splitting Strategy}
+The package uses a flexible data splitting strategy controlled by the
+\code{prop_hold} and \code{idx_train} arguments:
+
+\itemize{
+\item \strong{Automatic Split (\code{idx_train = NULL}):} The training indices
+are computed automatically based on \code{prop_hold}. The split uses stratified
+sampling to ensure that the proportion of observations with missing values
+is preserved across the training and validation/test sets.
+
+\item \strong{Manual Split (\code{idx_train} provided):} The supplied indices
+are used directly, and \code{prop_hold} is ignored. The vector must be a valid
+subset of \code{1:nrow(X)}. This approach is useful for reusing specific splits
+from previous analyses, performing custom cross-validation, or ensuring
+identical training sets across different models.
+}
+
+\strong{Role of the Hold-out Set}
+When \code{prop_hold > 0} and \code{idx_train} is \code{NULL}, the exact role of the
+held-out data depends on the grid search parameters (\code{sigma_grid} or \code{grid_size}):
+
+\itemize{
+\item \strong{Multiple candidates (\code{grid_size > 1}):} The hold-out data acts
+as a \strong{validation set} to select the best \eqn{\boldsymbol\sigma}.
+If \code{prop_hold = 0}, the selection is based on the in-sample MSE of the
+training data.
+
+\item \strong{Single candidate (\code{grid_size = 1}):} The hold-out data acts
+as a \strong{test set} to evaluate the final model. If \code{prop_hold = 0},
+the entire dataset is used for training without an independent test evaluation.
+}
 }
 \examples{
 # Get default control parameters
 controls <- pr_tree_control()
 
 # Customize some parameters
-custom_controls <- pr_tree_control(max_depth = 5, n_candidates = 5)
+ctrl1 <- pr_tree_control(max_depth = 5, n_candidates = 5)
+
+# equivalent calls
+ctrl2.v1 <- pr_tree_control(dist = "t", df = 4)
+ctrl2.v2 <- pr_tree_control(dist = "t", dist_pars = list(df = 4))
 
 }
