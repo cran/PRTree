@@ -1343,6 +1343,7 @@ contains
     p_out = 0.0_dp
 
     ! mask for P <= eps
+    allocate(p_zero(tree%n_train))
     p_zero = (tree%p(:, fa_id) <= eps)
     n_zero = count(p_zero)
 
@@ -1525,6 +1526,7 @@ contains
     ! Number of observations and their indices in the current node
     ! Each child node will have more than min_obs observations (previously computed)
     n_obs_node = tree%nodes(nodeid)%n_obs_node
+    allocate(idx_node(n_obs_node))
     idx_node = tree%nodes(nodeid)%idx  ! global indexes
     allocate (n_miss(tree%n_feat))
     n_miss = count(tree%na(idx_node, :), dim=1) ! number of missing cases in the node

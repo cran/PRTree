@@ -70,13 +70,13 @@
 #'
 #' Two resampling methods are available:
 #' \itemize{
-#'   \item **Monte Carlo CV** (`method = "montecarlo"`): In each of `n_iter`
+#'   \item **Monte Carlo CV** (`method = "montecarlo"`): In each of `n_rep`
 #'         iterations, the data is randomly split into training (`1 - prop_test`)
 #'         and testing (`prop_test`) sets. Observations may appear in multiple
 #'         test sets across iterations.
 #'   \item **k-fold CV** (`method = "kfold"`): The data is partitioned into
-#'         `n_folds` disjoint subsets. Each fold serves as the test set once,
-#'         while the remaining `n_folds - 1` folds are used for training and
+#'         `n_rep` disjoint subsets. Each fold serves as the test set once,
+#'         while the remaining `n_rep - 1` folds are used for training and
 #'         validation. This ensures every observation is tested exactly once.
 #' }
 #'
@@ -105,14 +105,14 @@
 #' X <- matrix(runif(1000, 0, 10), ncol = 2)
 #' y <- 2 * sin(X[, 1]) + 0.5 * X[, 2] + rnorm(500, 0, 0.2)
 #'
-#' # Default k-fold CV
+#' # Default Monte Carlo CV
 #' cv1 <- pr_tree_cv(y, X)
 #' plot(cv1)
 #'
 #' # Monte Carlo CV with custom parameters
 #' control_cv <- pr_tree_control_cv(
 #'   method = "montecarlo",
-#'   n_iter = 20,
+#'   n_rep = 5,
 #'   prop_test = 0.3,
 #'   prop_valid = 0.2
 #' )

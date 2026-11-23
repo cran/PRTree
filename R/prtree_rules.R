@@ -1,4 +1,4 @@
-# Last revision: July/2026
+# Last revision: November/2026
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Internal. NULL coalescing operator #----
@@ -211,6 +211,11 @@
 
       # Handle matrix case
       if (is.matrix(x)) {
+        # A 1x1 matrix comes from a scalar validated before n_feat was known
+        # (see pr_tree_control). Expand it to a single sigma vector.
+        if (!is.null(n_feat) && n_feat > 1 && nrow(x) == 1 && ncol(x) == 1) {
+          x <- matrix(x[1, 1], nrow = 1, ncol = n_feat)
+        }
         # If n_feat is available, check compatibility
         if (!is.null(n_feat) && ncol(x) != n_feat) {
           .stop.message(sprintf(
@@ -231,9 +236,9 @@
 
       # n_feat is available
       if (length(x) > 1 && length(x) != n_feat) {
-        .stop.message(sprintf(
+        .stop.message(sprintf(paste0(
           "The regressor matrix has %d columns, but sigma_grid vector has %d values.\n",
-          "Please provide either 1 or %d values.",
+          "Please provide either 1 or %d values."),
           n_feat, length(x), n_feat
         ))
       }

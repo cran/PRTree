@@ -71,7 +71,7 @@ user-facing function of the package.
 }
 \details{
 The tree is built using the training data specified by \code{idx_train} (or
-determined by \code{prop_test}). If validation data is available (the complement
+determined by \code{prop_hold}). If validation data is available (the complement
 of \code{idx_train}), it is used to select the optimal \eqn{\boldsymbol\sigma} values from
 the grid.
 
@@ -79,7 +79,7 @@ the grid.
 \itemize{
 \item If \code{sigma_grid} is not provided, it is automatically generated using
 \strong{only the training set} (the observations identified by \code{idx_train},
-which can be passed via \code{control} or calculated internally from \code{prop_test}).
+which can be passed via \code{control} or calculated internally from \code{prop_hold}).
 The validation/test data is used only for evaluation.
 \item Alternatively, users can create a custom grid using the helper function
 \code{expand_sigma_grid(X, ...)} and pass it via the \code{control} parameter. This
@@ -97,7 +97,7 @@ larger dataset (e.g., combining training and validation), you can:
 \enumerate{
 \item Extract the optimal \eqn{\boldsymbol\sigma} from the fitted model (\code{model$sigma})
 \item Create a new control object with \code{sigma_grid = matrix(model$sigma, nrow = 1)}
-and set \code{prop_test = 0} to use all data for training
+and set \code{prop_hold = 0} to use all data for training
 \item Run \link{pr_tree} again
 }
 }
@@ -124,12 +124,26 @@ legend("topright",
 )
 
 # Diagnostic plots
-par(mar = c(3, 4, 1.5, 1))
+oldpar <- par(mar = c(3, 4, 1.5, 1))
 plot(reg, y, which = c(1, 4, 2, 5), ncol = 2)
+par(oldpar)
 
 # Plotting the final tree
 plot_tree(reg, max_bins = 10)
 
+}
+\references{
+Alkhoury, S., Devijver, E., Clausel, M., Tami, M., Gaussier, E., &
+Oppenheim, G. (2020). Smooth and Consistent Probabilistic Regression Trees.
+\emph{Advances in Neural Information Processing Systems}, 33, 11345--11355.
+
+Prass, T. S., Neimaier, A. S., & Pumi, G. (2026). Handling Missing Data in
+Probabilistic Regression Trees. \emph{Applied Mathematical Modelling}, 117450.
+\doi{10.1016/j.apm.2026.117450}
+
+Prass, T. S., Neimaier, A. S., & Pumi, G. (2025). PRTree: An R Package for
+Probabilistic Regression Trees with Built-in Missing Data Handling.
+\emph{arXiv preprint}. \doi{10.48550/arXiv.2510.03634}
 }
 \seealso{
 \link{pr_tree_cv} for cross-validation options.

@@ -1,4 +1,4 @@
-# Last revision: July/2026
+# Last revision: November/2026
 
 #' @title
 #' Probabilistic Regression Trees (PRTrees)
@@ -9,7 +9,7 @@
 #'
 #' @details
 #' The tree is built using the training data specified by `idx_train` (or
-#' determined by `prop_test`). If validation data is available (the complement
+#' determined by `prop_hold`). If validation data is available (the complement
 #' of `idx_train`), it is used to select the optimal \eqn{\boldsymbol\sigma} values from
 #' the grid.
 #'
@@ -17,7 +17,7 @@
 #' \itemize{
 #'  \item If `sigma_grid` is not provided, it is automatically generated using
 #'   **only the training set** (the observations identified by `idx_train`,
-#'   which can be passed via `control` or calculated internally from `prop_test`).
+#'   which can be passed via `control` or calculated internally from `prop_hold`).
 #'   The validation/test data is used only for evaluation.
 #'  \item Alternatively, users can create a custom grid using the helper function
 #'   `expand_sigma_grid(X, ...)` and pass it via the `control` parameter. This
@@ -35,7 +35,7 @@
 #' \enumerate{
 #'  \item Extract the optimal \eqn{\boldsymbol\sigma} from the fitted model (`model$sigma`)
 #'  \item Create a new control object with `sigma_grid = matrix(model$sigma, nrow = 1)`
-#'   and set `prop_test = 0` to use all data for training
+#'   and set `prop_hold = 0` to use all data for training
 #'  \item Run [pr_tree] again
 #' }
 #'
@@ -119,11 +119,25 @@
 #' )
 #'
 #' # Diagnostic plots
-#' par(mar = c(3, 4, 1.5, 1))
+#' oldpar <- par(mar = c(3, 4, 1.5, 1))
 #' plot(reg, y, which = c(1, 4, 2, 5), ncol = 2)
-#' 
+#' par(oldpar)
+#'
 #' # Plotting the final tree
 #' plot_tree(reg, max_bins = 10)
+#'
+#' @references
+#' Alkhoury, S., Devijver, E., Clausel, M., Tami, M., Gaussier, E., &
+#' Oppenheim, G. (2020). Smooth and Consistent Probabilistic Regression Trees.
+#' *Advances in Neural Information Processing Systems*, 33, 11345--11355.
+#'
+#' Prass, T. S., Neimaier, A. S., & Pumi, G. (2026). Handling Missing Data in
+#' Probabilistic Regression Trees. *Applied Mathematical Modelling*, 117450.
+#' \doi{10.1016/j.apm.2026.117450}
+#'
+#' Prass, T. S., Neimaier, A. S., & Pumi, G. (2025). PRTree: An R Package for
+#' Probabilistic Regression Trees with Built-in Missing Data Handling.
+#' *arXiv preprint*. \doi{10.48550/arXiv.2510.03634}
 #'
 #' @seealso
 #' [pr_tree_cv] for cross-validation options.
@@ -150,6 +164,14 @@ pr_tree <- function(y, X, control = list(), ...) {
 # and process and returns the processed output
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 .pr_tree <- function(X, y, control) {
+  # The Fortran code reads sigma_grid as a (n_sigmas x n_feat) matrix without
+  # bounds checking, so make sure it is consistent before calling it.
+  control$sigma_grid <- .check.sigma_grid(control$sigma_grid, control$n_feat)
+  if (is.null(control$sigma_grid) ||
+      nrow(control$sigma_grid) != control$grid_size_final) {
+    .stop.message("'sigma_grid' is missing or inconsistent with 'grid_size_final'.")
+  }
+
   nc <- 2 * control$max_terminal_nodes - 1
   keep_full <- control$output_mode == 1
   if(control$n_obs > control$n_train){

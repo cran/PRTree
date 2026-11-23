@@ -5,9 +5,17 @@
 \alias{PRTree-package}
 \alias{PRTree.Package}
 \alias{PRTree}
-\title{PRTree: Probabilistic Regression Tress}
+\title{PRTree: Probabilistic Regression Trees}
 \description{
 \packageDescription{PRTree}
+}
+\seealso{
+Useful links:
+\itemize{
+  \item \url{https://github.com/tsprass/PRTree}
+  \item Report bugs at \url{https://github.com/tsprass/PRTree/issues}
+}
+
 }
 \author{
 Taiane Schaedler Prass \email{taianeprass@gmail.com} and Alisson Silva Neimaier \email{alissonneimaier@hotmail.com}

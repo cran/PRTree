@@ -116,6 +116,7 @@ subroutine pr_tree_fort(n_obs, n_feat, n_train, y_train, y_test, x_train, x_test
 
   ! Initialize best metrics
   best_test_mse = pos_inf
+  best_train_mse = pos_inf
   ! Early skip if no thresholds are available
   if (all(tree%nodes(1)%thresholds%nt == 0)) then
     call return_root_only_tree(tree, y_test, keep_full, n_tn, yhat_train, yhat_test, &

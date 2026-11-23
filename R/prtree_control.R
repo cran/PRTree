@@ -153,13 +153,13 @@ print.prtree.control <- function(x, ...) {
 #' [pr_tree_cv] for cross-validation.
 #'
 #' @examples
-#' # Default k-fold CV
+#' # Default Monte Carlo CV
 #' cv1 <- pr_tree_control_cv()
 #'
 #' # Monte Carlo CV with custom parameters
 #' cv2 <- pr_tree_control_cv(
 #'   method = "montecarlo",
-#'   n_iter = 20,
+#'   n_rep = 20,
 #'   prop_test = 0.3,
 #'   prop_valid = 0.2,
 #'   stratify = TRUE

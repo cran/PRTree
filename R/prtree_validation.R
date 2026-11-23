@@ -1,4 +1,4 @@
-# Last revision: July/2026
+# Last revision: November/2026
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Internal: check value against range #----
@@ -202,4 +202,17 @@
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 .check.y <- function(y) {
   .rule.y()$custom(x = y)
+}
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Internal: Check and format the sigma grid #----
+# Applies the sigma_grid rule once n_feat is known: scalars and vectors
+# are expanded to a 1 x n_feat matrix and the number of columns is
+# checked against n_feat. Returns a numeric (double) matrix, or NULL if
+# sigma_grid is NULL.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.check.sigma_grid <- function(sigma_grid, n_feat = NULL) {
+  sigma_grid <- .rule.sigma_grid(n_feat = n_feat)$custom(x = sigma_grid)
+  if (!is.null(sigma_grid)) storage.mode(sigma_grid) <- "double"
+  sigma_grid
 }

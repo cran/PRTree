@@ -1,4 +1,4 @@
-# Last revision: July/2026
+# Last revision: November/2026
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Internal: Collects all arguments from the parent function call, #----
@@ -56,6 +56,13 @@
   # Validate everything at once
   validated <- .pr_tree_control(all_params, is.cv = is.cv)
   control[names(validated)] <- validated
+
+  # n_feat is only known here. Re-apply the sigma_grid rule now that it is
+  # available, so scalars/vectors are expanded to n_feat columns and
+  # incompatible grids are rejected before reaching the Fortran code.
+  if (!is.null(control$sigma_grid)) {
+    control$sigma_grid <- .check.sigma_grid(control$sigma_grid, control$n_feat)
+  }
 
   # get the indexes for the training sample.
   # If indexes are provided, only sort them, otherwhise create a sample using

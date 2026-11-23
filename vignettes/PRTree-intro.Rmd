@@ -1,0 +1,220 @@
+---
+title: "Introduction to PRTree"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to PRTree}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 6.5,
+  fig.height = 4.2,
+  fig.align = "center"
+)
+has_ggplot2 <- requireNamespace("ggplot2", quietly = TRUE)
+```
+
+## Overview
+
+**PRTree** implements **Probabilistic Regression Trees (PRTrees)** in R with a high-performance **Fortran** backend. Unlike classical regression trees (such as CART), which partition the predictor space using hard binary splits and yield piecewise-constant predictions, PRTrees assign observations to terminal regions smoothly via probability distributions, producing continuous regression surfaces.
+
+A key feature of **PRTree** is its built-in support for **missing predictor values (`NA`)** during both model fitting and prediction, without requiring prior imputation.
+
+For the theoretical foundations of PRTrees with missing data, see Prass, Neimaier, & Pumi (2026), *Applied Mathematical Modelling*, 117450 (<https://doi.org/10.1016/j.apm.2026.117450>). For comprehensive implementation details and usage examples, see Prass, Neimaier, & Pumi (2025), arXiv:2510.03634 (<https://doi.org/10.48550/arXiv.2510.03634>).
+
+```{r load-pkg}
+library(PRTree)
+```
+
+## 1. Fitting a Probabilistic Regression Tree
+
+We start with a simple one-dimensional regression problem where the true signal is $f(x) = \cos(x)$ observed with Gaussian noise.
+
+```{r basic-fit}
+set.seed(1234)
+X <- matrix(runif(200, 0, 10), ncol = 1)
+y <- cos(X[, 1]) + rnorm(200, 0, 0.08)
+
+# Fit a PRTree using all observations for training (prop_hold = 0)
+fit <- pr_tree(y, X, max_terminal_nodes = 9, prop_hold = 0)
+summary(fit)
+```
+
+Unlike standard regression trees, the fitted curve is smooth across split thresholds:
+
+```{r plot-1d-fit}
+ord <- order(X[, 1])
+plot(
+  X[ord, 1], y[ord],
+  pch = 16, cex = 0.6, col = "gray50",
+  xlab = "x", ylab = "y",
+  main = "PRTree Smooth Fit to cos(x)"
+)
+lines(X[ord, 1], fit$yhat[ord], col = "steelblue", lwd = 2)
+lines(X[ord, 1], cos(X[ord, 1]), col = "firebrick", lwd = 1.5, lty = 2)
+legend(
+  "topright",
+  legend = c("Observed", "PRTree fit", "True cos(x)"),
+  col = c("gray50", "steelblue", "firebrick"),
+  pch = c(16, NA, NA), lty = c(NA, 1, 2), lwd = c(NA, 2, 1.5),
+  bty = "n"
+)
+```
+
+### Tree structure and diagnostic plots
+
+`plot_tree()` displays the learned split hierarchy along with probability heatmaps at each terminal node (using base R graphics):
+
+```{r plot-tree, fig.height = 4.6}
+plot_tree(fit, max_bins = 10)
+```
+
+When `ggplot2` is installed, `plot(fit, y)` produces model diagnostic panels (Observed vs. Fitted, Residuals, Q-Q plot, and Terminal Node Probabilities):
+
+```{r diag-plots, eval = has_ggplot2, fig.height = 5}
+plot(fit, y, which = c(1, 2, 4, 5), ncol = 2)
+```
+
+### Prediction on new data
+
+Use `predict()` to obtain point predictions (`complete = FALSE`, the default) or both predictions and the terminal-node membership probability matrix `P` (`complete = TRUE`):
+
+```{r predict-basic}
+X_new <- matrix(c(1.0, 3.14, 6.28, 9.0), ncol = 1)
+pred <- predict(fit, newdata = X_new, complete = TRUE)
+
+round(pred$yhat, 4)
+round(rowSums(pred$P), 6)
+```
+
+## 2. Controlling Smoothing Parameters and Distributions
+
+Model parameters can be configured via `pr_tree_control()` or passed directly through `...` in `pr_tree()`.
+
+By default, `pr_tree()` automatically constructs a grid of candidate smoothing parameters (`sigma`) scaled to the standard deviation of each predictor and selects the best vector on a holdout validation split (`prop_hold = 0.2`). You can also inspect or customize this grid using `expand_sigma_grid()`, or fix `sigma_grid` to a scalar, vector, or custom matrix:
+
+```{r sigma-and-dist}
+set.seed(42)
+X2 <- matrix(runif(200 * 2, 0, 10), ncol = 2)
+colnames(X2) <- c("x1", "x2")
+y2 <- sin(X2[, 1]) + 0.4 * X2[, 2] + rnorm(200, 0, 0.15)
+
+# Inspect an automatically scaled sigma grid
+grid <- expand_sigma_grid(X2, grid_size = 5, tiny_sigma = 1e-20, verbose = FALSE)
+grid
+
+# Fit using Student's t distribution (df = 4) and the custom grid
+ctrl <- pr_tree_control(
+  dist = "t",
+  df = 4,
+  sigma_grid = grid,
+  max_terminal_nodes = 8,
+  prop_hold = 0.2
+)
+fit_t <- pr_tree(y2, X2, control = ctrl)
+fit_t
+```
+
+Setting `sigma_grid = 0` recovers crisp (hard-split) behavior while expanding automatically to match the number of predictors in `X`:
+
+```{r fixed-sigma}
+ctrl_crisp <- pr_tree_control(sigma_grid = 0, prop_hold = 0, max_terminal_nodes = 6)
+fit_crisp <- pr_tree(y2, X2, control = ctrl_crisp)
+fit_crisp$sigma
+```
+
+## 3. Native Handling of Missing Data (`NA`)
+
+**PRTree** handles missing predictor values directly during tree construction and prediction without prior imputation. Two parameters control this behavior:
+
+- `proxy_crit` (`"mean"`, `"var"`, or `"both"`): criterion used to assign incomplete observations during node splits.
+- `fill_type` (`0`, `1`, or `2`): strategy used to compute terminal-node membership probabilities `P` for observations with `NA` entries:
+  - `0`: uniform probability across terminal regions;
+  - `1`: probability 1 if all observed predictors fall within the region;
+  - `2` (default): probability computed using only the observed predictors.
+
+```{r missing-data}
+set.seed(2026)
+X_miss <- X2
+X_miss[sample(nrow(X_miss), 25), 1] <- NA
+X_miss[sample(nrow(X_miss), 20), 2] <- NA
+
+# Compare the three missing-data probability strategies
+mse_by_fill <- sapply(0:2, function(ft) {
+  m <- pr_tree(
+    y2, X_miss,
+    fill_type = ft,
+    proxy_crit = "both",
+    max_terminal_nodes = 8,
+    prop_hold = 0.2,
+    grid_size = 4
+  )
+  m$mse["validation"]
+})
+names(mse_by_fill) <- paste0("fill_type=", 0:2)
+round(mse_by_fill, 4)
+```
+
+Predictions also work seamlessly when `newdata` contains partial or complete rows of `NA`:
+
+```{r predict-missing}
+fit_na <- pr_tree(
+  y2, X_miss,
+  fill_type = 2,
+  max_terminal_nodes = 8,
+  prop_hold = 0,
+  grid_size = 4
+)
+
+X_new_na <- rbind(
+  c(2.0, 5.0),
+  c(NA, 5.0),
+  c(2.0, NA),
+  c(NA, NA)
+)
+colnames(X_new_na) <- colnames(X2)
+
+predict(fit_na, newdata = X_new_na)
+```
+
+## 4. Cross-Validation and Data Splitting
+
+`train_test_split()` creates simple random splits, missing-value stratified splits, or *k*-fold partitions:
+
+```{r split}
+set.seed(123)
+is_na_row <- apply(is.na(X_miss), 1, any)
+folds <- train_test_split(stratify = TRUE, is_NA = is_na_row, n_rep = 5)
+summary(folds)
+```
+
+`pr_tree_cv()` automates both **Monte Carlo** (`method = "montecarlo"`) and ***k*-fold** (`method = "kfold"`) cross-validation, including internal validation for selecting `sigma` and refitting on the full training folds (`update_final = TRUE`):
+
+```{r cv-run}
+set.seed(123)
+ctrl_cv <- pr_tree_control_cv(
+  method = "kfold",
+  n_rep = 5,
+  prop_valid = 0.2,
+  stratify = TRUE,
+  max_terminal_nodes = 6,
+  grid_size = 3
+)
+
+cv_res <- pr_tree_cv(y2, X_miss, control_cv = ctrl_cv, verbose = FALSE)
+summary(cv_res)
+```
+
+```{r cv-plot, eval = has_ggplot2, fig.height = 5}
+plot(cv_res)
+```
+
+## References
+
+- Alkhoury, S., Devijver, E., Clausel, M., Tami, M., Gaussier, E., & Oppenheim, G. (2020). Smooth and Consistent Probabilistic Regression Trees. *Advances in Neural Information Processing Systems (NeurIPS)*, 33, 11345–11355.
+- Prass, T. S., Neimaier, A. S., & Pumi, G. (2026). Handling Missing Data in Probabilistic Regression Trees. *Applied Mathematical Modelling*, 117450. <https://doi.org/10.1016/j.apm.2026.117450>
+- Prass, T. S., Neimaier, A. S., & Pumi, G. (2025). PRTree: An R Package for Probabilistic Regression Trees with Built-in Missing Data Handling. *arXiv:2510.03634*. <https://doi.org/10.48550/arXiv.2510.03634>

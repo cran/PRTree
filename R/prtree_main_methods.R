@@ -222,8 +222,8 @@ print.summary.prtree <- function(x, ...) {
 #'
 #' @param which Which plots to produce. Options are:
 #'   \itemize{
-#'     \item `1`: \strong{Ovserved vs Fitted} - Scatter plot comparing
-#'           observe responses against fitted values. Requires `y`.
+#'     \item `1`: \strong{Observed vs Fitted} - Scatter plot comparing
+#'           observed responses against fitted values. Requires `y`.
 #'     \item `2`: \strong{Residuals (index plot)} - Residuals plotted
 #'           against observation index. Useful for detecting patterns or outliers.
 #'           Requires `y`.
@@ -555,7 +555,8 @@ plot_tree <- function(x, heatmap_width = 0.8, heatmap_height = 0.08,
   breaks <- seq(0, 1, length.out = n_bins + 1)
 
   # === PLOT ===
-  graphics::par(mfrow = c(1,1))
+  oldpar <- graphics::par(mfrow = c(1, 1))
+  on.exit(graphics::par(oldpar), add = TRUE)
   graphics::plot.new()
   bottom_margin <- 0.4 + heatmap_height * 1.5
   graphics::plot.window(xlim = c(0, 1), ylim = c(-bottom_margin, max_depth + 0.5))

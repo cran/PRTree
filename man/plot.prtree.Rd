@@ -15,8 +15,8 @@ Can be omitted if only plot 5 is requested.}
 
 \item{which}{Which plots to produce. Options are:
 \itemize{
-\item \code{1}: \strong{Ovserved vs Fitted} - Scatter plot comparing
-observe responses against fitted values. Requires \code{y}.
+\item \code{1}: \strong{Observed vs Fitted} - Scatter plot comparing
+observed responses against fitted values. Requires \code{y}.
 \item \code{2}: \strong{Residuals (index plot)} - Residuals plotted
 against observation index. Useful for detecting patterns or outliers.
 Requires \code{y}.

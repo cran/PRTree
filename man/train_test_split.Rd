@@ -82,7 +82,7 @@ missing values in both training and testing sets. In this case:
 \strong{Missing values statistics:}
 If \code{is_NA} is provided but \code{stratify = FALSE}, the function will still
 compute missing values statistics for the resulting splits. The length of
-\code{is_NA} is against \code{n_obs} to ensure consistency. These statistics will be
+\code{is_NA} is checked against \code{n_obs} to ensure consistency. These statistics will be
 available in the \link{summary} output, with a note indicating that they were
 not used for stratification.
 
@@ -116,7 +116,7 @@ split <- train_test_split(
 summary(split) # Note about missing stats will appear
 }
 
-# Stratified 10-fold partition
+# Stratified 5-fold partition
 folds <- train_test_split(
   n_obs = 1000,
   is_NA = sample(c(TRUE, FALSE), prob = c(0.1, 0.9), replace = TRUE, size = 1000),

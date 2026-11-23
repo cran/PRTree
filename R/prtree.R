@@ -1,10 +1,10 @@
 #' @title
-#' PRTree: Probabilistic Regression Tress
+#' PRTree: Probabilistic Regression Trees
 #'
 #' @description
 #' \packageDescription{PRTree}
 #'
-#' @author Taiane Schaedler Prass \email{taianeprass@@gmail.com} and Alisson Silva Neimaier \email{alissonneimaier@hotmail.com}
+#' @author Taiane Schaedler Prass \email{taianeprass@@gmail.com} and Alisson Silva Neimaier \email{alissonneimaier@@hotmail.com}
 #'
 #' @docType package
 #'

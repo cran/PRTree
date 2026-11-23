@@ -45,7 +45,7 @@
 #' **Missing values statistics:**
 #'   If `is_NA` is provided but `stratify = FALSE`, the function will still
 #'   compute missing values statistics for the resulting splits. The length of
-#'   `is_NA` is against `n_obs` to ensure consistency. These statistics will be
+#'   `is_NA` is checked against `n_obs` to ensure consistency. These statistics will be
 #'   available in the [summary] output, with a note indicating that they were
 #'   not used for stratification.
 #'
@@ -111,7 +111,7 @@
 #' summary(split) # Note about missing stats will appear
 #' }
 #' 
-#' # Stratified 10-fold partition
+#' # Stratified 5-fold partition
 #' folds <- train_test_split(
 #'   n_obs = 1000,
 #'   is_NA = sample(c(TRUE, FALSE), prob = c(0.1, 0.9), replace = TRUE, size = 1000),
